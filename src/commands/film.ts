@@ -51,7 +51,11 @@ export class UserCommand extends Command {
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
     const category = interaction.options.getString("kategooria");
 
-    type Response = {
+    type Movie = {
+      runtime: number;
+      imdb_id: number;
+      id: number;
+      genres: [{ name: string }];
       results: {
         id: number;
         title: string;
@@ -61,7 +65,8 @@ export class UserCommand extends Command {
         release_date: string;
       }[];
     };
-    const response = await axios.get<Response>(
+
+    const response = await axios.get<Movie>(
       `https://api.themoviedb.org/3/discover/movie?with_genres=${category}&sort_by=vote_count.desc&page=${pageNr}&api_key=${process.env.MOVIEDB_API_KEY}`,
     );
 
@@ -76,24 +81,17 @@ export class UserCommand extends Command {
     const posterPath = movie.poster_path;
     const date = movie.release_date;
     const releaseYear = new Date(date).getFullYear();
-    type Response2 = {
-      results: {
-        id: number;
-        title: string;
-        vote_average: number;
-        overview: string;
-        poster_path: string;
-        release_date: string;
-      }[];
-    };
 
-    const movieResult2 = await axios.get<Response2>(
+    const movieResult2 = await axios.get<Movie>(
       `https://api.themoviedb.org/3/movie/${movieId}?api_key=${process.env.MOVIEDB_API_KEY}`,
     );
 
-    const movieGenre = movieResult2.genres[0].name;
-    const imdbId = movieResult2.imdb_id;
-    const runTimeMinutes = movieResult2.runtime;
+    const movieGenre = movieResult2.data.genres
+      .slice(0, 2)
+      .map((g) => g.name)
+      .join(", ");
+    const imdbId = movieResult2.data.imdb_id;
+    const runTimeMinutes = movieResult2.data.runtime;
     const runTimeHours = Math.floor(runTimeMinutes / 60);
     const remainingMinutes = runTimeMinutes % 60;
 
@@ -108,7 +106,6 @@ export class UserCommand extends Command {
         )},`,
       )
       .setThumbnail(`https://image.tmdb.org/t/p/original${posterPath}`)
-
       .setColor("#FF0000");
 
     await interaction.reply({ embeds: [embed] });
