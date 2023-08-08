@@ -100,10 +100,8 @@ export class UserCommand extends Command {
       .setURL(`https://www.imdb.com/title/${imdbId}?ref_=ttls_li_tt`)
 
       .setDescription(
-        `**${releaseYear}** • **${runTimeHours}h${remainingMinutes}m** • **${movieGenre}**  \n⭐ **${movieRating}**   \n${trim(
-          movieOverview,
-          150,
-        )},`,
+        `**${releaseYear}** • **${runTimeHours}h${remainingMinutes}m** • **${movieGenre}**
+          \n⭐ **${movieRating}**   \n${trim(movieOverview, 150)},`,
       )
       .setThumbnail(`https://image.tmdb.org/t/p/original${posterPath}`)
       .setColor("#FF0000");

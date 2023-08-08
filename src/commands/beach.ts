@@ -76,6 +76,10 @@ const getBeachRow = (beach: Beach) => {
   if (beachinfo.temperature === null)
     return `${flag} **${beach.name}**: andmed puuduvad`;
   else {
-    return ` ${flag} **${date} ${beach.name}** õhk: **${beachinfo.temperature} **°C vesi: **${beachinfo.waterTemperature} **°C  inimesi: **${beachinfo.crowd}** `;
+    return ` ${flag} **${date} ${beach.name}** õhk: **${
+      beachinfo.temperature || "-"
+    } **°C vesi: **${beachinfo.waterTemperature || "-"} **°C  inimesi: **${
+      beachinfo.crowd || "-"
+    }** `;
   }
 };

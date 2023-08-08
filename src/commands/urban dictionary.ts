@@ -1,13 +1,14 @@
-import { ApplyOptions } from '@sapphire/decorators';
-import { Command } from '@sapphire/framework';
-import { EmbedBuilder } from 'discord.js';
-import axios from 'axios';
+import { ApplyOptions } from "@sapphire/decorators";
+import { Command } from "@sapphire/framework";
+import { EmbedBuilder } from "discord.js";
+import axios from "axios";
 
-const trim = (str: string, max: number) => (str.length > max ? `${str.slice(0, max - 3)}...` : str);
+const trim = (str: string, max: number) =>
+  str.length > max ? `${str.slice(0, max - 3)}...` : str;
 
 @ApplyOptions<Command.Options>({
-  name: 'ud',
-  description: 'urban dictionary'
+  name: "ud",
+  description: "urban dictionary",
 })
 export class UserCommand extends Command {
   public override registerApplicationCommands(registry: Command.Registry) {
@@ -15,15 +16,22 @@ export class UserCommand extends Command {
       builder
         .setName(this.name)
         .setDescription(this.description)
-        .addStringOption((option) => option.setName('termin').setRequired(true).setDescription('urban dictionary'))
+        .addStringOption((option) =>
+          option
+            .setName("termin")
+            .setRequired(true)
+            .setDescription("urban dictionary"),
+        ),
     );
   }
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
     await interaction.deferReply();
 
-    const term = interaction.options.getString('termin')!;
-    const { data } = await axios.get(`https://api.urbandictionary.com/v0/define?term=${term}}`);
+    const term = interaction.options.getString("termin")!;
+    const { data } = await axios.get(
+      `https://api.urbandictionary.com/v0/define?term=${term}}`,
+    );
     const { list } = data;
 
     if (!list.length) {
@@ -31,9 +39,13 @@ export class UserCommand extends Command {
     }
     const [answer] = list;
 
-    const fixAnswer = answer.definition.replace(/\[|\]/g, '');
+    const fixAnswer = answer.definition.replace(/\[|\]/g, "");
 
-    const embed = new EmbedBuilder().setColor(0xefff00).setTitle(answer.word).setURL(answer.permalink).setDescription(trim(fixAnswer, 200));
+    const embed = new EmbedBuilder()
+      .setColor(0xefff00)
+      .setTitle(answer.word)
+      .setURL(answer.permalink)
+      .setDescription(trim(fixAnswer, 200));
     return interaction.editReply({ embeds: [embed] });
   }
 }

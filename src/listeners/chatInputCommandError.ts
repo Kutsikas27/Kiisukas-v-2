@@ -1,6 +1,10 @@
-import { type Events, Listener, type ChatInputCommandErrorPayload } from '@sapphire/framework';
+import {
+  type Events,
+  Listener,
+  type ChatInputCommandErrorPayload,
+} from "@sapphire/framework";
 
-const errorMessage = { content: 'Midagi läks valesti...' };
+const errorMessage = { content: "Midagi läks valesti..." };
 
 export class CoreEvent extends Listener<typeof Events.ChatInputCommandError> {
   public async run(error: Error, payload: ChatInputCommandErrorPayload) {
