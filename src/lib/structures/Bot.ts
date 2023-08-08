@@ -1,14 +1,26 @@
-import { ApplicationCommandRegistries, RegisterBehavior, SapphireClient } from '@sapphire/framework';
-import { type ClientOptions, GatewayIntentBits, Partials } from 'discord.js';
+import {
+  ApplicationCommandRegistries,
+  RegisterBehavior,
+  SapphireClient,
+} from "@sapphire/framework";
+import { type ClientOptions, GatewayIntentBits, Partials } from "discord.js";
 
 const options: ClientOptions = {
-  defaultPrefix: '!',
+  defaultPrefix: "!",
   loadMessageCommandListeners: true,
   partials: [Partials.Channel],
-  intents: [GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.Guilds, GatewayIntentBits.MessageContent]
+  intents: [
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildPresences,
+  ],
 };
 
-ApplicationCommandRegistries.setDefaultBehaviorWhenNotIdentical(RegisterBehavior.BulkOverwrite);
+ApplicationCommandRegistries.setDefaultBehaviorWhenNotIdentical(
+  RegisterBehavior.BulkOverwrite,
+);
 
 export class Bot extends SapphireClient {
   public constructor() {
