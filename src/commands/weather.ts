@@ -33,7 +33,9 @@ export class UserCommand extends Command {
     const { summary, temperature, apparentTemperature, windSpeed, icon } =
       data.forecast;
     const embed = new EmbedBuilder()
+
       .setColor(0xefff00)
+
       .setTitle(`${data.description} ${getWeatherEmoji(icon)}`)
       .setDescription(
         `${summary}, **${Math.round(temperature)}°C** (tajutav **${Math.round(
