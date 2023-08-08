@@ -1,0 +1,5 @@
+app = "kiisukas"
+primary_region = "arn"
+
+[build]
+  builder = "heroku/buildpacks:20"
