@@ -33,8 +33,6 @@ export class UserCommand extends Command {
     const quotes = await getStocks();
     const market = interaction.options.getString("turg") || "TALLINN";
     const description = getEmbedDescription(quotes, market);
-    console.log("lalal");
-    interaction.client.logger.info("lalalald!");
     const embed = new EmbedBuilder()
       .setColor(0xef0f00)
       .setDescription(description);
