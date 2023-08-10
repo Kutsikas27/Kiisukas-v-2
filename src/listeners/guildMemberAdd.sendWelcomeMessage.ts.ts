@@ -18,6 +18,6 @@ export class UserListener extends Listener<Events.GuildMemberAdd> {
       return console.log(this.name, `Ei ole tekstikanal`);
     }
 
-    await channel.send(`**${member.displayName}** liitus serveriga! 👋`);
+    await channel.send(`<@${member.id}> liitus serveriga! 👋`);
   }
 }
