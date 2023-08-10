@@ -2,9 +2,7 @@ import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
 import { EmbedBuilder } from "discord.js";
 import axios from "axios";
-
-const trim = (str: string, max: number) =>
-  str.length > max ? `${str.slice(0, max - 3)}...` : str;
+import { trim } from "../lib/utils/utils";
 
 function generateRandomInteger(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;

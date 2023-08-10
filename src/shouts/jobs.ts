@@ -1,6 +1,6 @@
 import { EmbedBuilder } from "discord.js";
 import { getJobOfferings, type Job } from "../services/jobOffers.service";
-import { trim } from "../lib/utils/utils";
+import { delay, trim } from "../lib/utils/utils";
 import { container } from "@sapphire/framework";
 import { isTextBasedChannel } from "@sapphire/discord.js-utilities";
 
@@ -27,13 +27,13 @@ export const initJobsShoutsService = () => {
 
 const getJobOffers = async () => {
   const jobs = await getJobOfferings();
-  jobs.forEach((job) => {
+  for (const job of jobs) {
     if (!jobIds.includes(job.id)) {
       jobIds.push(job.id);
+      await delay(1000);
       if (settings.isInitialized) sendMessageToChannel(job);
     }
-  });
-
+  }
   settings.isInitialized = true;
 };
 
@@ -67,5 +67,6 @@ const sendMessageToChannel = (job: Job) => {
   if (salary) embed.setFooter({ text: salary });
   const channel = getChannel();
   if (!channel) return;
+
   channel.send({ embeds: [embed] });
 };
