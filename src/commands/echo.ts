@@ -11,18 +11,18 @@ export class UserCommand extends Command {
       builder
         .setName(this.name)
         .setDescription(this.description)
-
         .addStringOption((option) =>
           option
-            .setName("input")
+            .setName("tekst")
             .setDescription("sisesta tekst")
             .setRequired(true),
         ),
     );
   }
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
-    const input = interaction.options.getString("input")!;
-    interaction.channel?.send(input);
+    //const input = interaction.options.getString("tekst")!;
+    if (!interaction.channel) return;
+    interaction.channel.send("");
     await interaction.reply({ content: "Sõnum edastatud!", ephemeral: true });
   }
 }
