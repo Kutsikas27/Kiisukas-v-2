@@ -43,6 +43,7 @@ export class UserCommand extends Command {
     await interaction.deferReply();
     const beaches = await beachService.getBeaches();
     const subCommand = interaction.options.getSubcommand();
+    console.log("test");
     const searchString = interaction.options.getString("rand")!;
     const description =
       subCommand === "rand"
