@@ -20,9 +20,9 @@ export class UserCommand extends Command {
     );
   }
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
-    //const input = interaction.options.getString("tekst")!;
+    const input = interaction.options.getString("tekst")!;
     if (!interaction.channel) return;
-    interaction.channel.send("tekst");
-    await interaction.reply({ content: "Sõnum edastatud!", ephemeral: true });
+    interaction.channel.send(input);
+    await interaction.reply({ content: "sõnum edastatud", ephemeral: true });
   }
 }
