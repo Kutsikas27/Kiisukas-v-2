@@ -22,7 +22,7 @@ export class UserCommand extends Command {
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
     //const input = interaction.options.getString("tekst")!;
     if (!interaction.channel) return;
-    interaction.channel.send("");
+    interaction.channel.send("tekst");
     await interaction.reply({ content: "Sõnum edastatud!", ephemeral: true });
   }
 }
