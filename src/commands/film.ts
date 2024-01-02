@@ -67,7 +67,6 @@ export class UserCommand extends Command {
     const response = await axios.get<Movie>(
       `https://api.themoviedb.org/3/discover/movie?with_genres=${category}&sort_by=vote_count.desc&page=${pageNr}&api_key=${process.env.MOVIEDB_API_KEY}`,
     );
-    //test
     const randomIndex = Math.floor(
       Math.random() * response.data.results.length,
     );
