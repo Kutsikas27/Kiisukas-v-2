@@ -2,6 +2,7 @@ import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
 import { EmbedBuilder } from "discord.js";
 import axios from "axios";
+import { JSDOM } from "jsdom";
 
 type Book = {
   imageUrl: string;
@@ -39,6 +40,7 @@ export class UserCommand extends Command {
   }
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
+    await interaction.deferReply();
     const term = interaction.options.getString("pealkiri")!;
     const { data } = await axios.get<Book[]>(
       `https://www.goodreads.com/book/auto_complete?format=json&q=${term}}`,
@@ -47,20 +49,46 @@ export class UserCommand extends Command {
       return await interaction.reply(`Vastet raamatule ${term} ei leitud.`);
     }
 
-    const { title, bookUrl, imageUrl, avgRating, numPages } = data[0];
+    const { title, bookUrl, avgRating, numPages } = data[0];
     const { name } = data[0].author;
-    const { html } = data[0].description;
+    const info = await getBookInfo(bookUrl);
 
     const embed = new EmbedBuilder()
       .setTitle(title)
       .setURL(`https://www.goodreads.com${bookUrl}`)
       .setDescription(
         `**${name}** • **${numPages} lk**  \n**${avgRating}**⭐
-        \n  ${html} `,
+        \n  ${info.description} `,
       )
-      .setThumbnail(imageUrl)
+      .setThumbnail(`${info.image}`)
       .setColor("#c7b198");
 
-    return await interaction.reply({ embeds: [embed] });
+    return await interaction.followUp({ embeds: [embed] });
   }
 }
+const getBookInfo = async (bookUrl: string) => {
+  const response = await axios.get(`https://www.goodreads.com/${bookUrl}`, {
+    responseType: "stream",
+  });
+  let html = "";
+  for await (const chunk of response.data) {
+    const currentChunk = chunk.toString();
+    html += currentChunk;
+    const { document } = new JSDOM(html).window;
+    const featuredPerson = document.querySelector(".FeaturedPerson__meta");
+    if (featuredPerson) {
+      response.data.destroy();
+      break;
+    }
+  }
+
+  const { document } = new JSDOM(html).window;
+  const image = document.querySelector<HTMLImageElement>(
+    ".BookPage__bookCover img",
+  )?.src;
+  const description = document.querySelector(
+    ".TruncatedContent__text.TruncatedContent__text--large",
+  )?.textContent;
+
+  return { image, description };
+};
