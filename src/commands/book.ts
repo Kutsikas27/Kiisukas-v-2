@@ -82,7 +82,7 @@ const getBookInfo = async (bookUrl: string) => {
     }
   }
 
-  const { document } = new JSDOM(html).window;
+  const { document } = new JSDOM(html.replaceAll("<br />", "\n")).window;
   const image = document.querySelector<HTMLImageElement>(
     ".BookPage__bookCover img",
   )?.src;
@@ -90,5 +90,5 @@ const getBookInfo = async (bookUrl: string) => {
     ".TruncatedContent__text.TruncatedContent__text--large",
   )?.textContent;
 
-  return { image, description };
+  return { image, description: description?.replaceAll("\n\n\n", "\n\n") };
 };
