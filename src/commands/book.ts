@@ -59,7 +59,7 @@ export class UserCommand extends Command {
         \n  ${html} `,
       )
       .setThumbnail(imageUrl)
-      .setColor("#FF0000");
+      .setColor("#c7b198");
 
     return await interaction.reply({ embeds: [embed] });
   }
