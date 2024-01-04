@@ -59,7 +59,8 @@ export class UserCommand extends Command {
       .setTitle(title)
       .setURL(`https://www.goodreads.com${bookUrl}`)
       .setDescription(
-        `**${info.genres}\n** **${name}** • **${numPages} lk**  \n**${avgRating}**⭐
+        `**${name}** • **${numPages} lk**
+       **${info.genres}**  \n**${avgRating}**⭐
         \n  ${info.description} `,
       )
       .setThumbnail(`${info.image}`)
@@ -104,7 +105,7 @@ const getBookInfo = async (bookUrl: string) => {
     bulletedList: true,
     numberedList: true,
   }).replaceAll("\n\n\n", "\n\n");
-  const genres = genresList.join(", ");
+  const genres = genresList.slice(0, 3).join(", ");
   return {
     image,
     description,
