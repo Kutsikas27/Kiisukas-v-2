@@ -90,5 +90,10 @@ const getBookInfo = async (bookUrl: string) => {
     ".TruncatedContent__text.TruncatedContent__text--large",
   )?.textContent;
 
-  return { image, description: description?.replaceAll("\n\n\n", "\n\n") };
+  return {
+    image,
+    description: description
+      ?.replaceAll("\n\n\n", "\n\n")
+      .replaceAll(".", "\\."),
+  };
 };
