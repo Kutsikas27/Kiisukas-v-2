@@ -1,6 +1,6 @@
 import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
-import { EmbedBuilder } from "discord.js";
+import { EmbedBuilder, escapeMarkdown } from "discord.js";
 import axios from "axios";
 import { JSDOM } from "jsdom";
 
@@ -52,12 +52,14 @@ export class UserCommand extends Command {
     const { title, bookUrl, avgRating, numPages } = data[0];
     const { name } = data[0].author;
     const info = await getBookInfo(bookUrl);
-
+    if (!info) {
+      return;
+    }
     const embed = new EmbedBuilder()
       .setTitle(title)
       .setURL(`https://www.goodreads.com${bookUrl}`)
       .setDescription(
-        `**${name}** • **${numPages} lk**  \n**${avgRating}**⭐
+        `**${info.genres}\n** **${name}** • **${numPages} lk**  \n**${avgRating}**⭐
         \n  ${info.description} `,
       )
       .setThumbnail(`${info.image}`)
@@ -66,6 +68,7 @@ export class UserCommand extends Command {
     return await interaction.followUp({ embeds: [embed] });
   }
 }
+
 const getBookInfo = async (bookUrl: string) => {
   const response = await axios.get(`https://www.goodreads.com/${bookUrl}`, {
     responseType: "stream",
@@ -86,14 +89,25 @@ const getBookInfo = async (bookUrl: string) => {
   const image = document.querySelector<HTMLImageElement>(
     ".BookPage__bookCover img",
   )?.src;
-  const description = document.querySelector(
+  const genresList = [
+    ...document.querySelectorAll(
+      ".BookPageMetadataSection__genres .BookPageMetadataSection__genreButton",
+    ),
+  ].map((e) => e.textContent);
+  const textContent = document.querySelector(
     ".TruncatedContent__text.TruncatedContent__text--large",
   )?.textContent;
-
+  if (!textContent) {
+    return;
+  }
+  const description = escapeMarkdown(textContent, {
+    bulletedList: true,
+    numberedList: true,
+  }).replaceAll("\n\n\n", "\n\n");
+  const genres = genresList.join(", ");
   return {
     image,
-    description: description
-      ?.replaceAll("\n\n\n", "\n\n")
-      .replaceAll(".", "\\."),
+    description,
+    genres,
   };
 };
