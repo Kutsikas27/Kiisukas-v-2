@@ -10,6 +10,7 @@ type Book = {
   bookUrl: string;
   numPages: number;
   avgRating: string;
+  ratingsCount: number;
   author: Author;
   description: Description;
 };
@@ -49,7 +50,7 @@ export class UserCommand extends Command {
       return await interaction.reply(`Vastet raamatule ${term} ei leitud.`);
     }
 
-    const { title, bookUrl, avgRating, numPages } = data[0];
+    const { title, bookUrl, avgRating, numPages, ratingsCount } = data[0];
     const { name } = data[0].author;
     const info = await getBookInfo(bookUrl);
     if (!info) {
@@ -60,7 +61,9 @@ export class UserCommand extends Command {
       .setURL(`https://www.goodreads.com${bookUrl}`)
       .setDescription(
         `**${name}** • **${numPages} lk**
-       **${info.genres}**  \n**${avgRating}**⭐
+      *${info.genres}*  \n\n ⭐ **${avgRating}** • *${new Intl.NumberFormat(
+        "et-EE",
+      ).format(ratingsCount)} reitingut*
         \n  ${info.description} `,
       )
       .setThumbnail(`${info.image}`)
