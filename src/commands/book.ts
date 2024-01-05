@@ -35,17 +35,31 @@ export class UserCommand extends Command {
           option
             .setName("pealkiri")
             .setRequired(true)
-            .setDescription("info raamatu kohta"),
+            .setDescription("info raamatu kohta")
+            .setAutocomplete(true),
         ),
     );
+  }
+  public override async autocompleteRun(
+    interaction: Command.AutocompleteInteraction,
+  ) {
+    const focusedValue = interaction.options.getFocused();
+
+    const { data } = await getBooksApi(focusedValue);
+
+    const autocompleteOptions = data.map((book) => ({
+      name: book.title,
+      value: book.title,
+    }));
+
+    interaction.respond(autocompleteOptions);
   }
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
     await interaction.deferReply();
     const term = interaction.options.getString("pealkiri")!;
-    const { data } = await axios.get<Book[]>(
-      `https://www.goodreads.com/book/auto_complete?format=json&q=${term}}`,
-    );
+    const { data } = await getBooksApi(term);
+
     if (!data || data.length === 0) {
       return await interaction.reply(`Vastet raamatule ${term} ei leitud.`);
     }
@@ -114,4 +128,9 @@ const getBookInfo = async (bookUrl: string) => {
     description,
     genres,
   };
+};
+const getBooksApi = async (title: string) => {
+  return await axios.get<Book[]>(
+    `https://www.goodreads.com/book/auto_complete?format=json&q=${title}`,
+  );
 };
