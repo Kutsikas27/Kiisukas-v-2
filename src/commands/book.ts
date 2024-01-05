@@ -48,8 +48,8 @@ export class UserCommand extends Command {
     const { data } = await getBooksApi(focusedValue);
 
     const autocompleteOptions = data.map((book) => ({
-      name: book.title,
-      value: book.title,
+      name: book.title.substring(0, 100),
+      value: book.title.substring(0, 100),
     }));
 
     interaction.respond(autocompleteOptions);
@@ -57,7 +57,7 @@ export class UserCommand extends Command {
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
     await interaction.deferReply();
-    const term = interaction.options.getString("pealkiri")!;
+    const term = interaction.options.getString("pealkiri", true);
     const { data } = await getBooksApi(term);
 
     if (!data || data.length === 0) {
