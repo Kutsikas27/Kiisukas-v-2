@@ -31,7 +31,10 @@ export class UserCommand extends Command {
     const { data } = await getBooksApi(focusedValue);
 
     const autocompleteOptions = data.map((book) => ({
-      name: book.title.substring(0, 100),
+      name: [
+        book.title.substring(0, 70),
+        book.author.name.substring(0, 20),
+      ].join(" - "),
       value: book.title.substring(0, 100),
     }));
 
