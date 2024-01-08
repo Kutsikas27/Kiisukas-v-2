@@ -2,16 +2,26 @@ import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
 import { EmbedBuilder } from "discord.js";
 import axios from "axios";
-import { trim } from "../lib/utils/utils";
 
-function generateRandomInteger(min: number, max: number) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-const pageNr = generateRandomInteger(1, 10);
+type Movie = {
+  runtime: number;
+  imdb_id: number;
+  id: number;
+  genres: [{ name: string }];
+  results: {
+    id: number;
+    title: string;
+    vote_average: number;
+    overview: string;
+    poster_path: string;
+    release_date: string;
+    vote_count: number;
+  }[];
+};
 
 @ApplyOptions<Command.Options>({
   name: "film",
-  description: "Soovitab filmi valitud kategooriast.",
+  description: "otsi filmi pealkirja järgi",
 })
 export class UserCommand extends Command {
   public override registerApplicationCommands(registry: Command.Registry) {
@@ -21,88 +31,80 @@ export class UserCommand extends Command {
         .setDescription(this.description)
         .addStringOption((option) =>
           option
-            .setName("kategooria")
-            .setDescription("filmi kategooria ")
+            .setName("film")
+            .setDescription("pealkiri")
             .setRequired(true)
-            .addChoices(
-              { name: "Märul", value: "28" },
-              { name: "Seiklus", value: "12" },
-              { name: "Animatsioon", value: "16" },
-              { name: "Komöödia", value: "35" },
-              { name: "Krimi", value: "80" },
-              { name: "Dokumentaal", value: "99" },
-              { name: "Fantaasia", value: "14" },
-              { name: "Ajalugu", value: "36" },
-              { name: "Õudus", value: "27" },
-              { name: "Müsteerium", value: "9648" },
-              { name: "Armastus", value: "10749" },
-              { name: "Ulme", value: "878" },
-              { name: "Sõda", value: "10752" },
-              { name: "Põnevik", value: "53" },
-              { name: "Vestern", value: "37" },
-              { name: "Draama", value: "18" },
-            ),
+            .setAutocomplete(true),
         ),
     );
   }
+  public override async autocompleteRun(
+    interaction: Command.AutocompleteInteraction,
+  ) {
+    const focusedValue = interaction.options.getFocused();
+
+    const { data } = await getMovie(focusedValue);
+    const limit = 5;
+    const autocompleteOptions = data.results.slice(0, limit).map((film) => ({
+      name: film.title.substring(0, 100),
+      value: film.title.substring(0, 100),
+    }));
+
+    interaction.respond(autocompleteOptions);
+  }
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
-    const category = interaction.options.getString("kategooria");
+    const film = interaction.options.getString("film", true);
+    const movieResponse = await getMovie(film);
+    if (!movieResponse || movieResponse.data.results.length === 0) {
+      return await interaction.followUp(`Vastet filmile ${film} ei leitud.`);
+    }
+    const {
+      title,
+      id,
+      vote_average,
+      overview,
+      poster_path,
+      release_date,
+      vote_count,
+    } = movieResponse.data.results[0];
 
-    type Movie = {
-      runtime: number;
-      imdb_id: number;
-      id: number;
-      genres: [{ name: string }];
-      results: {
-        id: number;
-        title: string;
-        vote_average: number;
-        overview: string;
-        poster_path: string;
-        release_date: string;
-      }[];
-    };
-
-    const response = await axios.get<Movie>(
-      `https://api.themoviedb.org/3/discover/movie?with_genres=${category}&sort_by=vote_count.desc&page=${pageNr}&api_key=${process.env.MOVIEDB_API_KEY}`,
-    );
-    const randomIndex = Math.floor(
-      Math.random() * response.data.results.length,
-    );
-    const movie = response.data.results[randomIndex];
-    const movieId = movie.id;
-    const movieTitle = movie.title;
-    const movieRating = movie.vote_average;
-    const movieOverview = movie.overview;
-    const posterPath = movie.poster_path;
-    const date = movie.release_date;
-    const releaseYear = new Date(date).getFullYear();
+    const releaseYear = new Date(release_date).getFullYear();
 
     const movieResult2 = await axios.get<Movie>(
-      `https://api.themoviedb.org/3/movie/${movieId}?api_key=${process.env.MOVIEDB_API_KEY}`,
+      `https://api.themoviedb.org/3/movie/${id}?api_key=${process.env.MOVIEDB_API_KEY}`,
     );
 
-    const movieGenre = movieResult2.data.genres
+    const { imdb_id, runtime, genres } = movieResult2.data;
+
+    const movieGenre = genres
       .slice(0, 2)
       .map((g) => g.name)
       .join(", ");
-    const imdbId = movieResult2.data.imdb_id;
-    const runTimeMinutes = movieResult2.data.runtime;
-    const runTimeHours = Math.floor(runTimeMinutes / 60);
-    const remainingMinutes = runTimeMinutes % 60;
+    const runTimeHours = Math.floor(runtime / 60);
+    const remainingMinutes = runtime % 60;
 
     const embed = new EmbedBuilder()
-      .setTitle(movieTitle)
-      .setURL(`https://www.imdb.com/title/${imdbId}?ref_=ttls_li_tt`)
-
+      .setTitle(title)
+      .setURL(`https://www.imdb.com/title/${imdb_id}?ref_=ttls_li_tt`)
       .setDescription(
-        `**${releaseYear}** • **${runTimeHours}h${remainingMinutes}m** • **${movieGenre}**
-          \n⭐ **${movieRating}**   \n${trim(movieOverview, 150)},`,
+        `**${releaseYear}** • **${runTimeHours}h${remainingMinutes}m**
+          *${movieGenre}*  \n\n ⭐ **${new String(vote_average).substring(
+            0,
+            3,
+          )}** • *${new Intl.NumberFormat("et-EE").format(
+            vote_count,
+          )} reitingut*
+            \n  ${overview} `,
       )
-      .setThumbnail(`https://image.tmdb.org/t/p/original${posterPath}`)
+      .setThumbnail(`https://image.tmdb.org/t/p/original${poster_path}`)
       .setColor("#FF0000");
 
-    await interaction.reply({ embeds: [embed] });
+    return await interaction.reply({ embeds: [embed] });
   }
 }
+const getMovie = async (filmTitle: string) => {
+  return await axios.get<Movie>(
+    `https://api.themoviedb.org/3/search/movie?query=${filmTitle}&language=en-US&page=1&api_key=${process.env.MOVIEDB_API_KEY}`,
+  );
+};
