@@ -1,6 +1,6 @@
 import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
-import { EmbedBuilder } from "discord.js";
+import { EmbedBuilder, bold, italic } from "discord.js";
 
 import { getBookInfo, getBooksApi } from "../services/book.service";
 
@@ -35,7 +35,7 @@ export class UserCommand extends Command {
         book.title.substring(0, 70),
         book.author.name.substring(0, 20),
       ].join(" - "),
-      value: book.title.substring(0, 100),
+      value: book.bookUrl,
     }));
 
     interaction.respond(autocompleteOptions);
@@ -43,32 +43,54 @@ export class UserCommand extends Command {
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
     await interaction.deferReply();
+
     const term = interaction.options.getString("pealkiri", true);
-    const { data } = await getBooksApi(term);
-    if (!data || data.length === 0) {
-      return await interaction.followUp(`Vastet raamatule ${term} ei leitud.`);
+
+    let bookUrl;
+    if (!term.startsWith("/")) {
+      const { data } = await getBooksApi(term);
+      if (!data || data.length === 0) {
+        return await interaction.followUp(
+          `Vastet raamatule *${term}* ei leitud.`,
+        );
+      }
+      bookUrl = data[0].bookUrl;
+    } else {
+      bookUrl = term;
     }
 
-    const { title, bookUrl, avgRating, numPages, ratingsCount } = data[0];
-    const { name } = data[0].author;
     const info = await getBookInfo(bookUrl);
     if (!info) {
-      return;
+      return console.log("book info not found");
     }
 
+    const descriptionItems = [];
+    if (info.author) descriptionItems.push(bold(info.author));
+    if (info.genres) descriptionItems.push(italic(info.genres));
+
+    const ratingsRow = [];
+    if (info.rating) ratingsRow.push(bold("⭐ " + info.rating));
+    if (info.reviewsCount) ratingsRow.push(italic(info.reviewsCount));
+    if (ratingsRow.length) descriptionItems.push(ratingsRow.join(" • "));
+
+    if (info.description) descriptionItems.push("\n" + info.description);
+    const description = descriptionItems.join("\n");
+
     const embed = new EmbedBuilder()
-      .setTitle(title)
+
+      .setTitle(info.title)
       .setURL(`https://www.goodreads.com${bookUrl}`)
-      .setDescription(
-        `**${name}** • **${numPages} lk**
-      *${info.genres}*  \n\n ⭐ **${avgRating}** • *${new Intl.NumberFormat(
-        "et-EE",
-      ).format(ratingsCount)} reitingut*
-        \n  ${info.description} `,
-      )
+      .setDescription(description)
       .setThumbnail(`${info.image}`)
       .setColor("#c7b198");
-
+    if (info.pagesAndYearPublished) {
+      embed.setFooter({ text: info.pagesAndYearPublished });
+    }
     return await interaction.followUp({ embeds: [embed] });
   }
 }
+// `**${"nimi"}** • **${info.pages} lk**
+// *${info.genres}*  \n\n ⭐ **${"reiting"}** • *${new Intl.NumberFormat(
+//   "et-EE",
+// ).format(4883)} reitingut*
+//   \n  ${info.description} `
