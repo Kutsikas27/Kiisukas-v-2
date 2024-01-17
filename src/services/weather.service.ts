@@ -37,7 +37,7 @@ export const getForecast = async (linn: string) => {
   );
   if (!locationsResponse.data.length) return null;
   const forecastResponse = await axios.get<Forecast>(
-    `https://services.postimees.ee/weather/v4/testing/place/${locationsResponse.data[0].id}/forecast?type=currently&language=et`,
+    `https://services.postimees.ee/weather/v4/place/${locationsResponse.data[0].id}/forecast?type=currently,hourly,daily&language=et`,
   );
   return {
     description: locationsResponse.data[0].description,
