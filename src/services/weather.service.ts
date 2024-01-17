@@ -17,6 +17,12 @@ export const getWeatherEmoji = (icon: string) =>
 
 export type Forecast = {
   forecast: {
+    daily: {
+      temperatureHigh: number;
+      temperatureLow: number;
+      icon: string;
+      dateTime: string;
+    }[];
     currently: {
       summary: string;
       temperature: number;
@@ -41,6 +47,6 @@ export const getForecast = async (linn: string) => {
   );
   return {
     description: locationsResponse.data[0].description,
-    forecast: forecastResponse.data.forecast.currently[0],
+    forecast: forecastResponse.data.forecast,
   };
 };

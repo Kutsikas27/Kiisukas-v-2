@@ -30,17 +30,51 @@ export class UserCommand extends Command {
     const data = await getForecast(linn);
     if (!data)
       return interaction.editReply(`Ei leidnud vastet asukohale **${linn}**.`);
-    const { summary, temperature, apparentTemperature, windSpeed, icon } =
-      data.forecast;
+    const { currently, daily } = data.forecast;
+
     const embed = new EmbedBuilder()
 
       .setColor(0xefff00)
 
-      .setTitle(`${data.description} ${getWeatherEmoji(icon)}`)
+      .setTitle(`${data.description} ${getWeatherEmoji(currently[0].icon)}`)
       .setDescription(
-        `${summary}, **${Math.round(temperature)}°C** (tajutav **${Math.round(
-          apparentTemperature,
-        )}°C**), tuulekiirus **${Math.round(windSpeed)} m/s**`,
+        `**${Math.round(currently[0].temperature)}°C** (tajutav **${Math.round(
+          currently[0].apparentTemperature,
+        )}°C**) \n  ${currently[0].summary}, tuulekiirus **${Math.round(
+          currently[0].windSpeed,
+        )} m/s**`,
+      )
+      .addFields(
+        {
+          name: `**${new Date(daily[1].dateTime).toLocaleString("et", {
+            month: "long",
+            day: "numeric",
+          })}**`,
+          value: `**${getWeatherEmoji(daily[1].icon)}${Math.round(
+            daily[1].temperatureLow,
+          )}...${Math.round(daily[1].temperatureHigh)}°C**`,
+          inline: true,
+        },
+        {
+          name: `**${new Date(daily[2].dateTime).toLocaleString("et", {
+            month: "long",
+            day: "numeric",
+          })}**`,
+          value: `**${getWeatherEmoji(daily[2].icon)}${Math.round(
+            daily[2].temperatureLow,
+          )}...${Math.round(daily[2].temperatureHigh)}°C**`,
+          inline: true,
+        },
+        {
+          name: `**${new Date(daily[3].dateTime).toLocaleString("et", {
+            month: "long",
+            day: "numeric",
+          })}**`,
+          value: `**${getWeatherEmoji(daily[3].icon)}${Math.round(
+            daily[3].temperatureLow,
+          )}...${Math.round(daily[3].temperatureHigh)}°C**`,
+          inline: true,
+        },
       );
 
     return interaction.followUp({ embeds: [embed] });
