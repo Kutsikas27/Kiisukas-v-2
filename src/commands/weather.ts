@@ -76,7 +76,7 @@ export class UserCommand extends Command {
           inline: true,
         },
       );
-
+    console.log("test");
     return interaction.followUp({ embeds: [embed] });
   }
 }
