@@ -24,6 +24,7 @@ export class UserCommand extends Command {
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
     await interaction.deferReply();
+    console.log("test");
 
     const linn = interaction.options.getString("linn")!;
 
@@ -76,7 +77,6 @@ export class UserCommand extends Command {
           inline: true,
         },
       );
-    console.log("test");
     return interaction.followUp({ embeds: [embed] });
   }
 }

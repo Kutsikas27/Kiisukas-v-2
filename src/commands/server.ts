@@ -37,7 +37,7 @@ export class UserCommand extends Command {
       },
     );
     const { data } = await axios.get(
-      `https://discord.com/api/guilds/1065024077884047481/widget.json`,
+      `https://discord.com/api/guilds/1189280475542454362/widget.json`,
     );
 
     const onlineMembers = data.presence_count;
