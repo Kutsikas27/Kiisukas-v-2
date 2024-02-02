@@ -89,8 +89,3 @@ export class UserCommand extends Command {
     return await interaction.followUp({ embeds: [embed] });
   }
 }
-// `**${"nimi"}** • **${info.pages} lk**
-// *${info.genres}*  \n\n ⭐ **${"reiting"}** • *${new Intl.NumberFormat(
-//   "et-EE",
-// ).format(4883)} reitingut*
-//   \n  ${info.description} `
