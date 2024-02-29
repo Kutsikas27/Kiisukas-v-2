@@ -46,7 +46,7 @@ export class UserCommand extends Command {
     console.log("test");
     const won = input ? d1 + d2 === input : d1 + d2 === 12;
     const lost = !input && d1 === 1 && d2 === 1;
-
+    console.log("test");
     if (won) reply.react("🎉").catch(noop);
     if (lost) reply.react("💀").catch(noop);
   }
