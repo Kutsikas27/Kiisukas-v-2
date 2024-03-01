@@ -42,6 +42,7 @@ export class UserCommand extends Command {
     const content = `**${
       interaction.member.displayName
     }** viskab ${diceEmojis.get(d1)} ${diceEmojis.get(d2)}`;
+    console.log("tere");
     const reply = await interaction.reply({ content, fetchReply: true });
     console.log("test");
     const won = input ? d1 + d2 === input : d1 + d2 === 12;
