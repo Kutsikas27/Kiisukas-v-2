@@ -47,22 +47,12 @@ export class UserCommand extends Command {
       )
       .addFields(
         {
-          name: `**${new Date(daily[0].dateTime).toLocaleString("et", {
-            month: "long",
-            day: "numeric",
-          })}**`,
-          value: `**${getWeatherEmoji(daily[0].icon)}${Math.round(
-            daily[1].temperatureLow,
-          )}...${Math.round(daily[0].temperatureHigh)}°C**`,
-          inline: true,
-        },
-        {
           name: `**${new Date(daily[1].dateTime).toLocaleString("et", {
             month: "long",
             day: "numeric",
           })}**`,
           value: `**${getWeatherEmoji(daily[1].icon)}${Math.round(
-            daily[2].temperatureLow,
+            daily[1].temperatureLow,
           )}...${Math.round(daily[1].temperatureHigh)}°C**`,
           inline: true,
         },
@@ -72,8 +62,18 @@ export class UserCommand extends Command {
             day: "numeric",
           })}**`,
           value: `**${getWeatherEmoji(daily[2].icon)}${Math.round(
-            daily[3].temperatureLow,
+            daily[2].temperatureLow,
           )}...${Math.round(daily[2].temperatureHigh)}°C**`,
+          inline: true,
+        },
+        {
+          name: `**${new Date(daily[3].dateTime).toLocaleString("et", {
+            month: "long",
+            day: "numeric",
+          })}**`,
+          value: `**${getWeatherEmoji(daily[3].icon)}${Math.round(
+            daily[3].temperatureLow,
+          )}...${Math.round(daily[3].temperatureHigh)}°C**`,
           inline: true,
         },
       );
