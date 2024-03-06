@@ -21,7 +21,7 @@ export class UserCommand extends Command {
       largest: 2,
       serialComma: false,
     });
-    //hehhe
+    console.log("tere");
     const sent = await interaction.reply({
       content: "Pinging...",
       fetchReply: true,
