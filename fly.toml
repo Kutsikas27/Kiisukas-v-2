@@ -1,7 +1,7 @@
 app = "kiisukas"
 
 [build]
-  builder = "heroku/buildpacks:22"
+  builder = "heroku/builder:22"
 
 [deploy]
   strategy = "immediate"
