@@ -18,7 +18,7 @@ type Movie = {
     vote_count: number;
   }[];
 };
-
+console.log("test");
 @ApplyOptions<Command.Options>({
   name: "film",
   description: "otsi filmi pealkirja järgi",
