@@ -39,7 +39,7 @@ export class UserCommand extends Command {
     const { data } = await axios.get(
       `https://discord.com/api/guilds/1189280475542454362/widget.json`,
     );
-    console.log(data);
+
     const onlineMembers = data.presence_count;
     const serverName = data.name;
     const embed = new EmbedBuilder()
