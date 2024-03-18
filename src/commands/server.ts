@@ -14,7 +14,6 @@ export class UserCommand extends Command {
     registry.registerChatInputCommand((builder) =>
       builder.setName(this.name).setDescription(this.description),
     );
-    console.log("test");
   }
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
