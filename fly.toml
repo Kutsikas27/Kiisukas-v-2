@@ -4,4 +4,4 @@ app = "kiisukas"
   builder = "heroku/builder:22"
 
 [deploy]
-  strategy = "immediate"
+  strategy = "rolling"
