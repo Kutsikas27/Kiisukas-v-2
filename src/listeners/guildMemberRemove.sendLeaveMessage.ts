@@ -13,11 +13,11 @@ export class UserListener extends Listener<Events.GuildMemberRemove> {
 
   public async run(member: GuildMember) {
     const channel = member.guild.channels.cache.get(
-      process.env.MAIN_CHANNEL_ID || "",
+      process.env.JOIN_LEAVE_CHANNEL_ID || "",
     );
     if (!channel)
       return console.log(
-        "GuildMemberRemove.LeaveMessage:MAIN_CHANNEL_ID on seadistamata",
+        "GuildMemberRemove.LeaveMessage:JOIN_LEAVE_CHANNEL_ID on seadistamata",
       );
     if (channel.type !== ChannelType.GuildText) {
       return console.log(this.name, `Ei ole tekstikanal`);

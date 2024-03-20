@@ -1,7 +1,18 @@
-app = "kiisukas"
+# fly.toml app configuration file generated for kiisukas-v-2 on 2024-03-20T00:31:14+02:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'kiisukas-v-2'
 
 [build]
-  builder = "heroku/builder:22"
 
 [deploy]
   strategy = "immediate"
+
+
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1

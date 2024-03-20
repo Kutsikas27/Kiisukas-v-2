@@ -11,9 +11,9 @@ export class UserListener extends Listener<Events.GuildMemberAdd> {
   }
   public async run(member: GuildMember) {
     const channel = member.guild.channels.cache.get(
-      process.env.MAIN_CHANNEL_ID || "",
+      process.env.JOIN_LEAVE_CHANNEL_ID || "",
     );
-    if (!channel) return console.log("MAIN_CHANNEL_ID on seadistamata");
+    if (!channel) return console.log("JOIN_LEAVE_CHANNEL_ID on seadistamata");
     if (channel.type !== ChannelType.GuildText) {
       return console.log(this.name, `Ei ole tekstikanal`);
     }
