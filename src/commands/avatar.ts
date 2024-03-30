@@ -26,9 +26,9 @@ export class UserCommand extends Command {
     const member = interaction.options.getMember("kasutaja");
     if (!member || !isGuildMember(member))
       return interaction.reply("kasutajat ei leitud");
-    const embed = new EmbedBuilder().setImage(
-      member.displayAvatarURL({ size: 1024 }),
-    );
+    const embed = new EmbedBuilder()
+      .setTitle(`${member.displayName}`)
+      .setImage(member.displayAvatarURL({ size: 1024 }));
 
     return await interaction.reply({ embeds: [embed] });
   }
