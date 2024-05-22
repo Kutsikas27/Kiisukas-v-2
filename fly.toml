@@ -6,6 +6,7 @@
 app = 'kiisukas-v-2'
 
 [build]
+  builder = "heroku/builder:22"
 
 [deploy]
   strategy = "immediate"
@@ -16,3 +17,4 @@ app = 'kiisukas-v-2'
   memory = '256mb'
   cpu_kind = 'shared'
   cpus = 1
+
