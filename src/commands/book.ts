@@ -77,7 +77,6 @@ export class UserCommand extends Command {
     const description = descriptionItems.join("\n");
 
     const embed = new EmbedBuilder()
-
       .setTitle(info.title)
       .setURL(`https://www.goodreads.com${bookUrl}`)
       .setDescription(description)
@@ -89,8 +88,3 @@ export class UserCommand extends Command {
     return await interaction.followUp({ embeds: [embed] });
   }
 }
-// `**${"nimi"}** • **${info.pages} lk**
-// *${info.genres}*  \n\n ⭐ **${"reiting"}** • *${new Intl.NumberFormat(
-//   "et-EE",
-// ).format(4883)} reitingut*
-//   \n  ${info.description} `

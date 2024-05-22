@@ -16,10 +16,9 @@ export class UserListener extends Listener<Events.MessageCreate> {
           /(http|https):\/\/[^\s]+|discord\.com\/invite\/\w+/gi,
         )
       ) {
-        console.log("test");
         await message.delete();
       }
     }
   }
 }
-//push
+

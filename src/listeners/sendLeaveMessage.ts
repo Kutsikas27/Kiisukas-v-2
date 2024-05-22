@@ -1,7 +1,7 @@
 import { Listener } from "@sapphire/framework";
 import type { Events, GuildMember } from "discord.js";
 import humanizeDuration from "humanize-duration";
-import { ChannelType } from "discord.js";
+import { ChannelType, EmbedBuilder } from "discord.js";
 
 export class UserListener extends Listener<Events.GuildMemberRemove> {
   public constructor(context: Listener.Context, options: Listener.Options) {
@@ -28,17 +28,22 @@ export class UserListener extends Listener<Events.GuildMemberRemove> {
         `**${member.displayName}** lahkus meie hulgast.`,
       );
 
-    const duration = Date.now() - member.joinedAt.getTime();
-    return await channel.send(
-      `**${
-        member.displayName
-      }** lahkus meie hulgast. Tema elueaks jäi ${humanizeDuration(duration, {
-        language: "et",
-        round: true,
-        conjunction: " ja ",
-        largest: 2,
-        serialComma: false,
-      })}! Aamen! 🙏`,
-    );
+    const timeInServer = Date.now() - member.joinedAt.getTime();
+    const embed = new EmbedBuilder()
+      .setTitle(`${member.displayName} lahkus serverist `)
+      .setDescription(
+        `Nimi:<@${member.id}>
+       Viibis serveris: ${humanizeDuration(timeInServer, {
+         language: "et",
+         round: true,
+         conjunction: " ja ",
+         largest: 2,
+         serialComma: false,
+       })}`,
+      )
+      .setThumbnail(`${member.user.displayAvatarURL()}`)
+      .setColor("#E10000");
+
+    await channel.send({ embeds: [embed] });
   }
 }
