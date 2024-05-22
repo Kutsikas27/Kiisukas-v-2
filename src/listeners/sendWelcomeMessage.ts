@@ -23,7 +23,8 @@ export class UserListener extends Listener<Events.GuildMemberAdd> {
     const embed = new EmbedBuilder()
       .setTitle(`${member.displayName} liitus serveriga! 👋`)
       .setDescription(
-        `Nimi:<@${member.id}>
+        `Nimi:${member.user.username}
+         ID: ${member.id}
          Konto vanus: ${humanizeDuration(accountAge, {
            language: "et",
            round: true,

@@ -23,24 +23,26 @@ export class UserListener extends Listener<Events.GuildMemberRemove> {
       return console.log(this.name, `Ei ole tekstikanal`);
     }
 
-    if (!member.joinedAt)
-      return await channel.send(
-        `**${member.displayName}** lahkus meie hulgast.`,
+    const descriptionRows = [];
+    descriptionRows.push(`Nimi: ${member.user.username}`);
+    descriptionRows.push(`ID: ${member.id}`);
+    if (member.joinedAt)
+      descriptionRows.push(
+        ` Viibis serveris: ${humanizeDuration(
+          Date.now() - member.joinedAt.getTime(),
+          {
+            language: "et",
+            round: true,
+            conjunction: " ja ",
+            largest: 2,
+            serialComma: false,
+          },
+        )}`,
       );
 
-    const timeInServer = Date.now() - member.joinedAt.getTime();
     const embed = new EmbedBuilder()
       .setTitle(`${member.displayName} lahkus serverist `)
-      .setDescription(
-        `Nimi:<@${member.id}>
-       Viibis serveris: ${humanizeDuration(timeInServer, {
-         language: "et",
-         round: true,
-         conjunction: " ja ",
-         largest: 2,
-         serialComma: false,
-       })}`,
-      )
+      .setDescription(descriptionRows.join("\n"))
       .setThumbnail(`${member.user.displayAvatarURL()}`)
       .setColor("#E10000");
 
