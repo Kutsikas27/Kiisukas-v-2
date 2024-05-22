@@ -14,19 +14,15 @@ export class UserCommand extends Command {
         .setName(this.name)
         .setDescription(this.description)
         .addStringOption((option) =>
-          option
-            .setName("linn")
-            .setDescription("Sisesta linna nimi")
-            .setRequired(true),
+          option.setName("linn").setDescription("Sisesta linna nimi"),
         ),
     );
   }
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
     await interaction.deferReply();
-    console.log("test");
 
-    const linn = interaction.options.getString("linn")!;
+    const linn = interaction.options.getString("linn")! || "Tallinn";
 
     const data = await getForecast(linn);
     if (!data)
