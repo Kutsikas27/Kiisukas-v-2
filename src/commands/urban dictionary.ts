@@ -31,7 +31,6 @@ export class UserCommand extends Command {
       `https://api.urbandictionary.com/v0/define?term=${term}}`,
     );
     const { list } = data;
-    console.log("test");
     if (!list.length) {
       return interaction.editReply(`Ei leidnud vastet sõnale **${term}**.`);
     }
