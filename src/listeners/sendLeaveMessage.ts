@@ -1,6 +1,6 @@
 import { Listener } from "@sapphire/framework";
 import type { Events, GuildMember } from "discord.js";
-import humanizeDuration from "humanize-duration";
+import { getJoinLeaveDescription } from "../services/joinleave.service";
 import { ChannelType, EmbedBuilder } from "discord.js";
 
 export class UserListener extends Listener<Events.GuildMemberRemove> {
@@ -23,26 +23,9 @@ export class UserListener extends Listener<Events.GuildMemberRemove> {
       return console.log(this.name, `Ei ole tekstikanal`);
     }
 
-    const descriptionRows = [];
-    descriptionRows.push(`Nimi: ${member.user.username}`);
-    descriptionRows.push(`ID: ${member.id}`);
-    if (member.joinedAt)
-      descriptionRows.push(
-        ` Viibis serveris: ${humanizeDuration(
-          Date.now() - member.joinedAt.getTime(),
-          {
-            language: "et",
-            round: true,
-            conjunction: " ja ",
-            largest: 2,
-            serialComma: false,
-          },
-        )}`,
-      );
-
     const embed = new EmbedBuilder()
-      .setTitle(`${member.displayName} lahkus serverist `)
-      .setDescription(descriptionRows.join("\n"))
+      .setTitle(`${member.displayName} lahkus`)
+      .setDescription(getJoinLeaveDescription(member, false))
       .setThumbnail(`${member.user.displayAvatarURL()}`)
       .setColor("#E10000");
 
