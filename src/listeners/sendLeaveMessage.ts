@@ -27,6 +27,7 @@ export class UserListener extends Listener<Events.GuildMemberRemove> {
       .setTitle(`${member.displayName} lahkus`)
       .setDescription(getJoinLeaveDescription(member, false))
       .setThumbnail(`${member.user.displayAvatarURL()}`)
+      .setFooter({ text: `ID: ${member.id}` })
       .setColor("#E10000");
 
     await channel.send({ embeds: [embed] });

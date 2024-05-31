@@ -23,6 +23,7 @@ export class UserListener extends Listener<Events.GuildMemberAdd> {
       .setTitle(`${member.displayName} liitus 👋`)
       .setDescription(getJoinLeaveDescription(member, true))
       .setThumbnail(`${member.user.displayAvatarURL()}`)
+      .setFooter({ text: `ID: ${member.id}` })
       .setColor("#18E72B");
 
     await channel.send({ embeds: [embed] });

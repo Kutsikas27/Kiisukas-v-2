@@ -16,7 +16,7 @@ export const getJoinLeaveDescription = (
 ) => {
   const descriptionRows: string[] = [];
   descriptionRows.push(`Nimi: ${member.user.username}`);
-  descriptionRows.push(`ID: ${member.id}`);
+
 
   if (!member.joinedAt) return descriptionRows.join("\n");
   const now = Date.now();
