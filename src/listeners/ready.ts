@@ -14,6 +14,6 @@ export class UserListener extends Listener<Events.ClientReady> {
     client.user.setActivity(`since ${uptime}`, {
       type: ActivityType.Playing,
     });
-    
+//test
   }
 }
