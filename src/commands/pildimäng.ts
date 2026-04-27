@@ -336,7 +336,7 @@ export class PictureGameCommand extends Command {
     const allowedChannelId = process.env.PICTURE_GAME_CHANNEL_ID;
     if (allowedChannelId && interaction.channelId !== allowedChannelId) {
       return interaction.reply({
-        content: "Kasuta seda käsku pildimäng kanalis.",
+        content: "Kasuta seda käsku kanalis #pildimäng.",
         ephemeral: true,
       });
     }
