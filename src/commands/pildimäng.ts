@@ -1,6 +1,13 @@
 import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
-import { EmbedBuilder, Message, type TextBasedChannel } from "discord.js";
+import {
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  Message,
+  type TextBasedChannel,
+} from "discord.js";
 import axios from "axios";
 import { PointsService } from "../services/points.service";
 
@@ -114,22 +121,16 @@ export class PictureGameCommand extends Command {
       await interaction.deferReply();
 
       const painting = await this.fetchRandomArtwork();
-      const embed = this.buildGameEmbed(painting);
+      const allArtworks = await this.getFamousArtworks();
 
-      await interaction.editReply({
-        embeds: [embed],
-      });
-
-      const result = await this.runGuessRound({
+      await this.playRound({
+        interaction,
         channel,
         guildId: guild.id,
         userId: interaction.user.id,
         painting,
+        allArtworks,
       });
-
-      if (!result.titleGuessed || !result.artistGuessed) {
-        await channel.send(this.buildTimeoutMessage(painting, result));
-      }
 
       return;
     } catch (error) {
@@ -143,22 +144,307 @@ export class PictureGameCommand extends Command {
     }
   }
 
+  private async playRound(options: {
+    interaction: Command.ChatInputCommandInteraction;
+    channel: TextBasedChannel;
+    guildId: string;
+    userId: string;
+    painting: PaintingGameArtwork;
+    allArtworks: PaintingGameArtwork[];
+  }) {
+    const {
+      interaction,
+      channel,
+      guildId,
+      userId: initiatorId,
+      painting,
+      allArtworks,
+    } = options;
+
+    // Generate multiple choice options
+    const titleOptions = this.generateMultipleChoice(
+      painting.title,
+      allArtworks.map((a) => a.title),
+      4,
+    );
+
+    const artistOptions = this.generateMultipleChoice(
+      painting.artist,
+      allArtworks.map((a) => a.artist),
+      4,
+    );
+
+    const embed = this.buildGameEmbed(painting);
+    const titleButtons = this.buildButtonRow(titleOptions, "title");
+
+    const message = await interaction.editReply({
+      embeds: [embed],
+      components: [titleButtons],
+    });
+
+    const timeLimit = 30_000;
+    const startTime = Date.now();
+    const usersWhoAnsweredTitle = new Set<string>();
+    const usersWhoAnsweredArtist = new Set<string>();
+
+    // TITLE STAGE - allow multiple users to answer once each
+    const titleStageStartTime = Date.now();
+    while (Date.now() - titleStageStartTime < timeLimit) {
+      const timeLeft = Math.max(
+        timeLimit - (Date.now() - titleStageStartTime),
+        0,
+      );
+
+      if (timeLeft <= 0) {
+        break;
+      }
+
+      try {
+        const buttonInteraction = await message.awaitMessageComponent({
+          time: timeLeft,
+        });
+
+        const currentUserId = buttonInteraction.user.id;
+
+        // Check if this user already answered
+        if (usersWhoAnsweredTitle.has(currentUserId)) {
+          await buttonInteraction.reply({
+            content: "Sa oled juba vastanud sellele küsimusele!",
+            ephemeral: true,
+          });
+          continue;
+        }
+
+        usersWhoAnsweredTitle.add(currentUserId);
+
+        const selectedOption = buttonInteraction.customId.split("_")[1];
+
+        // Check title answer
+        if (selectedOption === this.normalizeAnswer(painting.title)) {
+          const points = this.addAndGetPoints(guildId, currentUserId, 0.5);
+
+          const responseEmbed = new EmbedBuilder()
+            .setTitle("✓ Õige vastus!")
+            .setDescription(
+              `Maali nimi: **${
+                painting.title
+              }**\n+0.5 punkti\nSul on nüüd **${this.formatPoints(
+                points,
+              )}** punkti`,
+            )
+            .setColor("Green");
+
+          await buttonInteraction.reply({
+            embeds: [responseEmbed],
+            ephemeral: true,
+          });
+        } else {
+          // Wrong answer - deduct 0.5 points
+          const points = this.addAndGetPoints(guildId, currentUserId, -0.5);
+
+          await buttonInteraction.reply({
+            content: `Vale vastus! -0.5 punkti\nSul on nüüd **${this.formatPoints(
+              points,
+            )}** punkti`,
+            ephemeral: true,
+          });
+        }
+      } catch {
+        // Timeout on title stage
+        await channel.send({ embeds: [this.buildTimeoutEmbed()] });
+        break;
+      }
+    }
+
+    // ARTIST STAGE
+    const artistButtonsRow = this.buildButtonRow(artistOptions, "artist");
+    const artistMessage = await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("Pildimäng - Järgmine: Autor")
+          .setDescription("Nüüd arva ära selle maali autor!")
+          .setImage(painting.imageUrl)
+          .setColor("Blue"),
+      ],
+      components: [artistButtonsRow],
+    });
+
+    const timeRemainingForArtist = timeLimit;
+    const artistStageStartTime = Date.now();
+
+    while (Date.now() - artistStageStartTime < timeRemainingForArtist) {
+      const timeLeft = Math.max(
+        timeRemainingForArtist - (Date.now() - artistStageStartTime),
+        0,
+      );
+
+      if (timeLeft <= 0) {
+        break;
+      }
+
+      try {
+        const buttonInteraction = await artistMessage.awaitMessageComponent({
+          time: timeLeft,
+        });
+
+        const currentUserId = buttonInteraction.user.id;
+
+        // Check if this user already answered
+        if (usersWhoAnsweredArtist.has(currentUserId)) {
+          await buttonInteraction.reply({
+            content: "Sa oled juba vastanud sellele küsimusele!",
+            ephemeral: true,
+          });
+          continue;
+        }
+
+        usersWhoAnsweredArtist.add(currentUserId);
+
+        const selectedArtist = buttonInteraction.customId.split("_")[1];
+
+        // Check artist answer
+        if (selectedArtist === this.normalizeAnswer(painting.artist)) {
+          const totalPoints = this.addAndGetPoints(guildId, currentUserId, 0.5);
+
+          const winEmbed = new EmbedBuilder()
+            .setTitle("✓ Õige vastus!")
+            .setDescription(
+              `Autor: **${
+                painting.artist
+              }**\n+0.5 punkti\nSul on nüüd **${this.formatPoints(
+                totalPoints,
+              )}** punkti`,
+            )
+            .setColor("Gold");
+
+          await buttonInteraction.reply({
+            embeds: [winEmbed],
+            ephemeral: true,
+          });
+        } else {
+          // Wrong answer - deduct 0.5 points
+          const points = this.addAndGetPoints(guildId, currentUserId, -0.5);
+
+          await buttonInteraction.reply({
+            content: `Vale vastus! -0.5 punkti\nSul on nüüd **${this.formatPoints(
+              points,
+            )}** punkti`,
+            ephemeral: true,
+          });
+        }
+      } catch {
+        // Timeout on artist stage
+        await channel.send({ embeds: [this.buildTimeoutEmbed()] });
+        break;
+      }
+    }
+
+    await this.disableMessageComponents(
+      titleButtons,
+      artistButtonsRow,
+      message,
+      artistMessage,
+    );
+  }
+
+  private buildTimeoutEmbed() {
+    return new EmbedBuilder()
+      .setTitle("Aeg läbi")
+      .setDescription("Mängu uuesti käivitamiseks kasuta käsku /pildimäng")
+      .setColor("Red");
+  }
+
+  private async disableMessageComponents(
+    titleRow: ActionRowBuilder<ButtonBuilder>,
+    artistRow: ActionRowBuilder<ButtonBuilder>,
+    titleMessage: Message,
+    artistMessage: Message,
+  ) {
+    const disableRow = (row: ActionRowBuilder<ButtonBuilder>) =>
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        row.components.map((component) =>
+          ButtonBuilder.from(component as any).setDisabled(true),
+        ),
+      );
+
+    try {
+      await titleMessage.edit({ components: [disableRow(titleRow)] });
+    } catch {
+      // ignore if editing failed
+    }
+
+    try {
+      await artistMessage.edit({ components: [disableRow(artistRow)] });
+    } catch {
+      // ignore if editing failed
+    }
+  }
+
   private buildGameEmbed(painting: PaintingGameArtwork) {
     return new EmbedBuilder()
-      .setTitle("Pildimäng")
+      .setTitle("Pildimäng - Maali nimi")
       .setDescription(
-        [
-          "Arva ära selle kuulsa maali nimi või autor!",
-          "",
-          "Maali nimi = **0.5 punkti**",
-          "Autor = **0.5 punkti**",
-          "Mõlemad samas sõnumis = **2 punkti**",
-          "",
-          `[Allikas](${painting.sourceUrl})`,
-        ].join("\n"),
+        "Arva ära selle kuulsa maali nimi valides ühe vastusevariandi alt!",
       )
       .setImage(painting.imageUrl)
       .setColor("Blue");
+  }
+
+  private generateMultipleChoice(
+    correctAnswer: string,
+    allOptions: string[],
+    count: number,
+  ): string[] {
+    // Filter out the correct answer and get unique options
+    const uniqueOptions = [
+      ...new Set(
+        allOptions
+          .filter((opt) => opt !== correctAnswer && opt.length > 0)
+          .map((opt) => opt.substring(0, 80)), // Truncate to fit buttons
+      ),
+    ];
+
+    if (uniqueOptions.length < count - 1) {
+      // If not enough wrong answers, use what we have
+      return [correctAnswer, ...uniqueOptions].slice(0, count);
+    }
+
+    // Randomly select wrong answers
+    const wrongAnswers: string[] = [];
+    const tempOptions = [...uniqueOptions];
+
+    for (let i = 0; i < count - 1; i++) {
+      if (tempOptions.length === 0) break;
+      const idx = Math.floor(Math.random() * tempOptions.length);
+      wrongAnswers.push(tempOptions[idx]);
+      tempOptions.splice(idx, 1);
+    }
+
+    // Combine and shuffle
+    const choices = [correctAnswer, ...wrongAnswers];
+    for (let i = choices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [choices[i], choices[j]] = [choices[j], choices[i]];
+    }
+
+    return choices;
+  }
+
+  private buildButtonRow(
+    options: string[],
+    type: "title" | "artist",
+  ): ActionRowBuilder<ButtonBuilder> {
+    const buttons = options.map((option) => {
+      const normalizedOption = this.normalizeAnswer(option);
+      return new ButtonBuilder()
+        .setCustomId(`${type}_${normalizedOption}`)
+        .setLabel(option.substring(0, 80))
+        .setStyle(ButtonStyle.Primary);
+    });
+
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+      buttons.slice(0, 4),
+    );
   }
 
   private async runGuessRound(options: {
@@ -167,108 +453,10 @@ export class PictureGameCommand extends Command {
     userId: string;
     painting: PaintingGameArtwork;
   }): Promise<GuessRoundResult> {
-    const { channel, guildId, userId, painting } = options;
-
-    let titleGuessed = false;
-    let artistGuessed = false;
-
-    const timeLimitMs = 30_000;
-    const startTime = Date.now();
-
-    const filter = (message: Message) =>
-      message.author.id === userId && !message.author.bot;
-
-    while (true) {
-      const elapsed = Date.now() - startTime;
-      const timeLeft = Math.max(timeLimitMs - elapsed, 0);
-
-      if (timeLeft <= 0) {
-        break;
-      }
-
-      const response = await this.awaitNextGuess(channel, filter, timeLeft);
-
-      if (!response) {
-        break;
-      }
-
-      const guess = this.checkGuess(response, painting);
-
-      const guessedBothAtOnce =
-        !titleGuessed &&
-        !artistGuessed &&
-        guess.titleCorrect &&
-        guess.artistCorrect;
-
-      if (guessedBothAtOnce) {
-        const points = this.addAndGetPoints(guildId, userId, 2);
-
-        await channel.send(
-          `Täiuslik vastus! See oli "${painting.title}" — ${
-            painting.artist
-          }. Sa said 2 punkti. Sul on nüüd ${this.formatPoints(
-            points,
-          )} punkti.`,
-        );
-
-        return {
-          titleGuessed: true,
-          artistGuessed: true,
-        };
-      }
-
-      let earnedPoints = 0;
-      const newlyCorrectParts: string[] = [];
-
-      if (!titleGuessed && guess.titleCorrect) {
-        titleGuessed = true;
-        earnedPoints += 0.5;
-        newlyCorrectParts.push("maali nimi");
-      }
-
-      if (!artistGuessed && guess.artistCorrect) {
-        artistGuessed = true;
-        earnedPoints += 0.5;
-        newlyCorrectParts.push("autor");
-      }
-
-      if (earnedPoints <= 0) {
-        continue;
-      }
-
-      const points = this.addAndGetPoints(guildId, userId, earnedPoints);
-
-      if (titleGuessed && artistGuessed) {
-        await channel.send(
-          `Õige! Leidsid nüüd mõlemad: "${painting.title}" — ${
-            painting.artist
-          }. Sa said seekord +${this.formatPoints(
-            earnedPoints,
-          )} punkti. Sul on nüüd ${this.formatPoints(points)} punkti.`,
-        );
-
-        return {
-          titleGuessed,
-          artistGuessed,
-        };
-      }
-
-      const remainingHint = titleGuessed
-        ? "Autor on veel puudu."
-        : "Maali nimi on veel puudu.";
-
-      await channel.send(
-        `Õige: ${newlyCorrectParts.join(" ja ")}! +${this.formatPoints(
-          earnedPoints,
-        )} punkti. ${remainingHint} Sul on nüüd ${this.formatPoints(
-          points,
-        )} punkti.`,
-      );
-    }
-
+    // This method is replaced by playRound
     return {
-      titleGuessed,
-      artistGuessed,
+      titleGuessed: false,
+      artistGuessed: false,
     };
   }
 
