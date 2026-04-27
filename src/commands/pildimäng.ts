@@ -385,7 +385,6 @@ export class PictureGameCommand extends Command {
   ) {
     return new EmbedBuilder()
       .setTitle(question.title)
-      .setURL(painting.sourceUrl)
       .setDescription(
         [
           question.description,
