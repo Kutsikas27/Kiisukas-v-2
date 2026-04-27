@@ -171,7 +171,9 @@ export class PictureGameCommand extends Command {
       await interaction.deferReply();
 
       const allArtworks = await this.getFamousArtworks();
-      const selectedArtwork = await this.selectRandomArtworkWithImage(allArtworks);
+      const selectedArtwork = await this.selectRandomArtworkWithImage(
+        allArtworks,
+      );
 
       await this.playRound({
         interaction,
@@ -415,7 +417,6 @@ export class PictureGameCommand extends Command {
   ) {
     return new EmbedBuilder()
       .setTitle(question.title)
-      .setURL(painting.sourceUrl)
       .setDescription(
         [
           question.description,
@@ -647,7 +648,8 @@ export class PictureGameCommand extends Command {
       (artwork) => !this.recentArtworkIds.has(artwork.id),
     );
 
-    const baseCandidates = unseenArtworks.length > 0 ? unseenArtworks : artworks;
+    const baseCandidates =
+      unseenArtworks.length > 0 ? unseenArtworks : artworks;
     const candidates = this.shuffle(baseCandidates);
     const maxAttempts = Math.min(candidates.length, 25);
 
@@ -656,11 +658,14 @@ export class PictureGameCommand extends Command {
       const imageUrl = await this.getDiscordSafeImageUrl(painting.imageUrl);
 
       if (!imageUrl) {
-        console.warn("Skipping artwork because image URL could not be resolved:", {
-          title: painting.title,
-          artist: painting.artist,
-          originalImageUrl: painting.imageUrl,
-        });
+        console.warn(
+          "Skipping artwork because image URL could not be resolved:",
+          {
+            title: painting.title,
+            artist: painting.artist,
+            originalImageUrl: painting.imageUrl,
+          },
+        );
 
         continue;
       }
@@ -682,7 +687,9 @@ export class PictureGameCommand extends Command {
       };
     }
 
-    throw new Error("Could not find an artwork with a Discord-renderable image");
+    throw new Error(
+      "Could not find an artwork with a Discord-renderable image",
+    );
   }
 
   private async getFamousArtworks(): Promise<PaintingGameArtwork[]> {
@@ -801,7 +808,9 @@ export class PictureGameCommand extends Command {
     return url.replace(/^http:/, "https:");
   }
 
-  private async getDiscordSafeImageUrl(imageUrl: string): Promise<string | null> {
+  private async getDiscordSafeImageUrl(
+    imageUrl: string,
+  ): Promise<string | null> {
     const normalizedUrl = this.normalizeImageUrl(imageUrl);
 
     if (this.resolvedImageUrlCache.has(normalizedUrl)) {
@@ -859,9 +868,8 @@ export class PictureGameCommand extends Command {
       );
 
       const pages = response.data.query?.pages ?? {};
-      const imageInfo = Object.values(pages).find(
-        (page) => page.imageinfo?.[0],
-      )?.imageinfo?.[0];
+      const imageInfo = Object.values(pages).find((page) => page.imageinfo?.[0])
+        ?.imageinfo?.[0];
 
       const thumbnailUrl = imageInfo?.thumburl ?? imageInfo?.url ?? null;
 

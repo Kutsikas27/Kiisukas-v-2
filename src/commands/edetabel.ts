@@ -40,7 +40,10 @@ export class LeaderboardCommand extends Command {
 
     if (targetUser) {
       // Show points for specific user
-      const points = PointsService.getPoints(guild.id, targetUser.id);
+      const points = Math.max(
+        0,
+        PointsService.getPoints(guild.id, targetUser.id),
+      );
       const username =
         interaction.guild?.members.cache.get(targetUser.id)?.displayName ||
         targetUser.username;
@@ -64,7 +67,8 @@ export class LeaderboardCommand extends Command {
           const username =
             interaction.guild?.members.cache.get(user.user_id)?.displayName ||
             user.user_id;
-          return `${index + 1}. ${username} - ${user.points} punkti`;
+          const points = Math.max(0, user.points);
+          return `${index + 1}. ${username} - ${points} punkti`;
         })
         .join("\n");
 
