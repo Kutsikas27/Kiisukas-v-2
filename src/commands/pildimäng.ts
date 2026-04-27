@@ -1,10 +1,11 @@
 import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
 import {
-  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ComponentType,
+  EmbedBuilder,
   Message,
   type TextBasedChannel,
 } from "discord.js";
@@ -41,14 +42,32 @@ interface PaintingGameArtwork {
   sourceUrl: string;
 }
 
-interface GuessCheckResult {
-  titleCorrect: boolean;
-  artistCorrect: boolean;
+type QuestionStage = "title" | "artist";
+
+interface MultipleChoiceOption {
+  label: string;
+  isCorrect: boolean;
 }
 
-interface GuessRoundResult {
-  titleGuessed: boolean;
-  artistGuessed: boolean;
+interface MultipleChoiceQuestion {
+  stage: QuestionStage;
+  title: string;
+  description: string;
+  correctAnswer: string;
+  options: MultipleChoiceOption[];
+  points: number;
+}
+
+interface StageResult {
+  answeredUserIds: Set<string>;
+  correctUserIds: Set<string>;
+  wrongUserIds: Set<string>;
+}
+
+interface ParsedCustomId {
+  sessionId: string;
+  stage: QuestionStage;
+  optionIndex: number;
 }
 
 @ApplyOptions<Command.Options>({
@@ -120,16 +139,17 @@ export class PictureGameCommand extends Command {
     try {
       await interaction.deferReply();
 
-      const painting = await this.fetchRandomArtwork();
       const allArtworks = await this.getFamousArtworks();
+      const painting = this.selectRandomArtwork(allArtworks);
+      const imageUrl = await this.getDiscordSafeImageUrl(painting.imageUrl);
 
       await this.playRound({
         interaction,
         channel,
         guildId: guild.id,
-        userId: interaction.user.id,
         painting,
         allArtworks,
+        imageUrl,
       });
 
       return;
@@ -148,52 +168,115 @@ export class PictureGameCommand extends Command {
     interaction: Command.ChatInputCommandInteraction;
     channel: TextBasedChannel;
     guildId: string;
-    userId: string;
     painting: PaintingGameArtwork;
     allArtworks: PaintingGameArtwork[];
+    imageUrl: string;
   }) {
-    const {
-      interaction,
-      channel,
-      guildId,
-      userId: initiatorId,
-      painting,
-      allArtworks,
-    } = options;
+    const { interaction, channel, guildId, painting, allArtworks, imageUrl } =
+      options;
 
-    // Generate multiple choice options
-    const titleOptions = this.generateMultipleChoice(
-      painting.title,
-      allArtworks.map((a) => a.title),
-      4,
-    );
+    const sessionId = this.createSessionId();
 
-    const artistOptions = this.generateMultipleChoice(
-      painting.artist,
-      allArtworks.map((a) => a.artist),
-      4,
-    );
-
-    const embed = this.buildGameEmbed(painting);
-    const titleButtons = this.buildButtonRow(titleOptions, "title");
-
-    const message = await interaction.editReply({
-      embeds: [embed],
-      components: [titleButtons],
+    const titleQuestion = this.createQuestion({
+      stage: "title",
+      title: "Pildimäng - Maali nimi",
+      description:
+        "Arva ära selle kuulsa maali nimi, valides ühe vastusevariandi alt!",
+      correctAnswer: painting.title,
+      allAnswers: allArtworks.map((artwork) => artwork.title),
     });
 
-    const timeLimit = 30_000;
-    const startTime = Date.now();
-    const usersWhoAnsweredTitle = new Set<string>();
-    const usersWhoAnsweredArtist = new Set<string>();
+    const titleRow = this.buildButtonRow(titleQuestion, sessionId);
 
-    // TITLE STAGE - allow multiple users to answer once each
-    const titleStageStartTime = Date.now();
-    while (Date.now() - titleStageStartTime < timeLimit) {
-      const timeLeft = Math.max(
-        timeLimit - (Date.now() - titleStageStartTime),
-        0,
-      );
+    const titleMessage = await interaction.editReply({
+      embeds: [this.buildQuestionEmbed(painting, imageUrl, titleQuestion)],
+      components: [titleRow],
+    });
+
+    const titleResult = await this.collectStageAnswers({
+      message: titleMessage,
+      guildId,
+      sessionId,
+      question: titleQuestion,
+    });
+
+    await this.disableMessageButtons(titleMessage, titleRow);
+
+    const artistQuestion = this.createQuestion({
+      stage: "artist",
+      title: "Pildimäng - Autor",
+      description: "Nüüd arva ära selle maali autor!",
+      correctAnswer: painting.artist,
+      allAnswers: allArtworks.map((artwork) => artwork.artist),
+    });
+
+    const artistRow = this.buildButtonRow(artistQuestion, sessionId);
+
+    const artistMessage = await channel.send({
+      embeds: [this.buildQuestionEmbed(painting, imageUrl, artistQuestion)],
+      components: [artistRow],
+    });
+
+    const artistResult = await this.collectStageAnswers({
+      message: artistMessage,
+      guildId,
+      sessionId,
+      question: artistQuestion,
+    });
+
+    await this.disableMessageButtons(artistMessage, artistRow);
+
+    await channel.send({
+      embeds: [
+        this.buildFinalAnswerEmbed({
+          painting,
+          imageUrl,
+          titleResult,
+          artistResult,
+        }),
+      ],
+    });
+  }
+
+  private createQuestion(options: {
+    stage: QuestionStage;
+    title: string;
+    description: string;
+    correctAnswer: string;
+    allAnswers: string[];
+  }): MultipleChoiceQuestion {
+    const { stage, title, description, correctAnswer, allAnswers } = options;
+
+    return {
+      stage,
+      title,
+      description,
+      correctAnswer,
+      options: this.generateMultipleChoice(correctAnswer, allAnswers, 4),
+      points: 0.5,
+    };
+  }
+
+  private async collectStageAnswers(options: {
+    message: Message;
+    guildId: string;
+    sessionId: string;
+    question: MultipleChoiceQuestion;
+  }): Promise<StageResult> {
+    const { message, guildId, sessionId, question } = options;
+
+    const result: StageResult = {
+      answeredUserIds: new Set<string>(),
+      correctUserIds: new Set<string>(),
+      wrongUserIds: new Set<string>(),
+    };
+
+    const timeLimitMs = 30_000;
+    const startedAt = Date.now();
+
+    while (true) {
+      const elapsed = Date.now() - startedAt;
+      const timeLeft = Math.max(timeLimitMs - elapsed, 0);
 
       if (timeLeft <= 0) {
         break;
@@ -201,301 +284,292 @@ export class PictureGameCommand extends Command {
 
       try {
         const buttonInteraction = await message.awaitMessageComponent({
+          componentType: ComponentType.Button,
           time: timeLeft,
         });
 
-        const currentUserId = buttonInteraction.user.id;
+        const parsedCustomId = this.parseQuestionCustomId(
+          buttonInteraction.customId,
+        );
 
-        // Check if this user already answered
-        if (usersWhoAnsweredTitle.has(currentUserId)) {
+        if (
+          !parsedCustomId ||
+          parsedCustomId.sessionId !== sessionId ||
+          parsedCustomId.stage !== question.stage
+        ) {
           await buttonInteraction.reply({
-            content: "Sa oled juba vastanud sellele küsimusele!",
+            content: "See nupp ei kuulu enam aktiivse mängu juurde.",
             ephemeral: true,
           });
           continue;
         }
 
-        usersWhoAnsweredTitle.add(currentUserId);
-
-        const selectedOption = buttonInteraction.customId.split("_")[1];
-
-        // Check title answer
-        if (selectedOption === this.normalizeAnswer(painting.title)) {
-          const points = this.addAndGetPoints(guildId, currentUserId, 0.5);
-
-          const responseEmbed = new EmbedBuilder()
-            .setTitle("✓ Õige vastus!")
-            .setDescription(
-              `Maali nimi: **${
-                painting.title
-              }**\n+0.5 punkti\nSul on nüüd **${this.formatPoints(
-                points,
-              )}** punkti`,
-            )
-            .setColor("Green");
-
-          await buttonInteraction.reply({
-            embeds: [responseEmbed],
-            ephemeral: true,
-          });
-        } else {
-          // Wrong answer - deduct 0.5 points
-          const points = this.addAndGetPoints(guildId, currentUserId, -0.5);
-
-          await buttonInteraction.reply({
-            content: `Vale vastus! -0.5 punkti\nSul on nüüd **${this.formatPoints(
-              points,
-            )}** punkti`,
-            ephemeral: true,
-          });
-        }
-      } catch {
-        // Timeout on title stage
-        await channel.send({ embeds: [this.buildTimeoutEmbed()] });
-        break;
-      }
-    }
-
-    // ARTIST STAGE
-    const artistButtonsRow = this.buildButtonRow(artistOptions, "artist");
-    const artistMessage = await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("Pildimäng - Järgmine: Autor")
-          .setDescription("Nüüd arva ära selle maali autor!")
-          .setImage(painting.imageUrl)
-          .setColor("Blue"),
-      ],
-      components: [artistButtonsRow],
-    });
-
-    const timeRemainingForArtist = timeLimit;
-    const artistStageStartTime = Date.now();
-
-    while (Date.now() - artistStageStartTime < timeRemainingForArtist) {
-      const timeLeft = Math.max(
-        timeRemainingForArtist - (Date.now() - artistStageStartTime),
-        0,
-      );
-
-      if (timeLeft <= 0) {
-        break;
-      }
-
-      try {
-        const buttonInteraction = await artistMessage.awaitMessageComponent({
-          time: timeLeft,
-        });
-
         const currentUserId = buttonInteraction.user.id;
 
-        // Check if this user already answered
-        if (usersWhoAnsweredArtist.has(currentUserId)) {
+        if (result.answeredUserIds.has(currentUserId)) {
           await buttonInteraction.reply({
-            content: "Sa oled juba vastanud sellele küsimusele!",
+            content: "Sa oled juba sellele küsimusele vastanud!",
             ephemeral: true,
           });
           continue;
         }
 
-        usersWhoAnsweredArtist.add(currentUserId);
+        const selectedOption = question.options[parsedCustomId.optionIndex];
 
-        const selectedArtist = buttonInteraction.customId.split("_")[1];
-
-        // Check artist answer
-        if (selectedArtist === this.normalizeAnswer(painting.artist)) {
-          const totalPoints = this.addAndGetPoints(guildId, currentUserId, 0.5);
-
-          const winEmbed = new EmbedBuilder()
-            .setTitle("✓ Õige vastus!")
-            .setDescription(
-              `Autor: **${
-                painting.artist
-              }**\n+0.5 punkti\nSul on nüüd **${this.formatPoints(
-                totalPoints,
-              )}** punkti`,
-            )
-            .setColor("Gold");
-
+        if (!selectedOption) {
           await buttonInteraction.reply({
-            embeds: [winEmbed],
+            content: "Seda vastusevarianti ei leitud.",
             ephemeral: true,
           });
-        } else {
-          // Wrong answer - deduct 0.5 points
-          const points = this.addAndGetPoints(guildId, currentUserId, -0.5);
-
-          await buttonInteraction.reply({
-            content: `Vale vastus! -0.5 punkti\nSul on nüüd **${this.formatPoints(
-              points,
-            )}** punkti`,
-            ephemeral: true,
-          });
+          continue;
         }
+
+        result.answeredUserIds.add(currentUserId);
+
+        if (selectedOption.isCorrect) {
+          result.correctUserIds.add(currentUserId);
+
+          const points = this.addAndGetPoints(
+            guildId,
+            currentUserId,
+            question.points,
+          );
+
+          await buttonInteraction.reply({
+            embeds: [
+              new EmbedBuilder()
+                .setTitle("✓ Õige vastus!")
+                .setDescription(
+                  [
+                    `Õige vastus: **${question.correctAnswer}**`,
+                    `+${this.formatPoints(question.points)} punkti`,
+                    `Sul on nüüd **${this.formatPoints(points)}** punkti.`,
+                  ].join("\n"),
+                )
+                .setColor("Green"),
+            ],
+            ephemeral: true,
+          });
+
+          continue;
+        }
+
+        result.wrongUserIds.add(currentUserId);
+
+        const points = this.addAndGetPoints(
+          guildId,
+          currentUserId,
+          -question.points,
+        );
+
+        await buttonInteraction.reply({
+          content: [
+            "Vale vastus!",
+            `-${this.formatPoints(question.points)} punkti`,
+            `Sul on nüüd **${this.formatPoints(points)}** punkti.`,
+          ].join("\n"),
+          ephemeral: true,
+        });
       } catch {
-        // Timeout on artist stage
-        await channel.send({ embeds: [this.buildTimeoutEmbed()] });
         break;
       }
     }
 
-    await this.disableMessageComponents(
-      titleButtons,
-      artistButtonsRow,
-      message,
-      artistMessage,
-    );
+    return result;
   }
 
-  private buildTimeoutEmbed() {
-    return new EmbedBuilder()
-      .setTitle("Aeg läbi")
-      .setDescription("Mängu uuesti käivitamiseks kasuta käsku /pildimäng")
-      .setColor("Red");
-  }
-
-  private async disableMessageComponents(
-    titleRow: ActionRowBuilder<ButtonBuilder>,
-    artistRow: ActionRowBuilder<ButtonBuilder>,
-    titleMessage: Message,
-    artistMessage: Message,
+  private buildQuestionEmbed(
+    painting: PaintingGameArtwork,
+    imageUrl: string,
+    question: MultipleChoiceQuestion,
   ) {
-    const disableRow = (row: ActionRowBuilder<ButtonBuilder>) =>
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        row.components.map((component) =>
-          ButtonBuilder.from(component as any).setDisabled(true),
-        ),
-      );
-
-    try {
-      await titleMessage.edit({ components: [disableRow(titleRow)] });
-    } catch {
-      // ignore if editing failed
-    }
-
-    try {
-      await artistMessage.edit({ components: [disableRow(artistRow)] });
-    } catch {
-      // ignore if editing failed
-    }
+    return new EmbedBuilder()
+      .setTitle(question.title)
+      .setURL(painting.sourceUrl)
+      .setDescription(
+        [
+          question.description,
+          "",
+          "Õige vastus = **+0.5 punkti**",
+          "Vale vastus = **-0.5 punkti**",
+          "Iga kasutaja saab vastata ühe korra.",
+        ].join("\n"),
+      )
+      .setImage(imageUrl)
+      .setColor("Blue");
   }
 
-  private buildGameEmbed(painting: PaintingGameArtwork) {
+  private buildFinalAnswerEmbed(options: {
+    painting: PaintingGameArtwork;
+    imageUrl: string;
+    titleResult: StageResult;
+    artistResult: StageResult;
+  }) {
+    const { painting, imageUrl, titleResult, artistResult } = options;
+
     return new EmbedBuilder()
-      .setTitle("Pildimäng - Maali nimi")
+      .setTitle("Pildimäng läbi")
+      .setURL(painting.sourceUrl)
       .setDescription(
-        "Arva ära selle kuulsa maali nimi valides ühe vastusevariandi alt!",
+        [
+          `Õige vastus: **${painting.title}** — **${painting.artist}**`,
+          "",
+          `Maali nime arvas õigesti: **${titleResult.correctUserIds.size}**`,
+          `Autori arvas õigesti: **${artistResult.correctUserIds.size}**`,
+          "",
+          `[Allikas](${painting.sourceUrl})`,
+        ].join("\n"),
       )
-      .setImage(painting.imageUrl)
-      .setColor("Blue");
+      .setImage(imageUrl)
+      .setColor("Gold");
   }
 
   private generateMultipleChoice(
     correctAnswer: string,
     allOptions: string[],
     count: number,
-  ): string[] {
-    // Filter out the correct answer and get unique options
-    const uniqueOptions = [
-      ...new Set(
-        allOptions
-          .filter((opt) => opt !== correctAnswer && opt.length > 0)
-          .map((opt) => opt.substring(0, 80)), // Truncate to fit buttons
-      ),
+  ): MultipleChoiceOption[] {
+    const normalizedCorrectAnswer = this.normalizeAnswer(correctAnswer);
+
+    const wrongOptions = this.uniqueByNormalizedAnswer(allOptions)
+      .filter((option) => {
+        const normalizedOption = this.normalizeAnswer(option);
+
+        return (
+          normalizedOption.length > 0 &&
+          normalizedOption !== normalizedCorrectAnswer
+        );
+      })
+      .sort(() => Math.random() - 0.5)
+      .slice(0, Math.max(count - 1, 0));
+
+    const choices: MultipleChoiceOption[] = [
+      {
+        label: correctAnswer,
+        isCorrect: true,
+      },
+      ...wrongOptions.map((option) => ({
+        label: option,
+        isCorrect: false,
+      })),
     ];
 
-    if (uniqueOptions.length < count - 1) {
-      // If not enough wrong answers, use what we have
-      return [correctAnswer, ...uniqueOptions].slice(0, count);
+    return choices.sort(() => Math.random() - 0.5).slice(0, count);
+  }
+
+  private uniqueByNormalizedAnswer(values: string[]) {
+    const uniqueValues = new Map<string, string>();
+
+    for (const value of values) {
+      const trimmedValue = value.trim();
+
+      if (!trimmedValue) {
+        continue;
+      }
+
+      const normalizedValue = this.normalizeAnswer(trimmedValue);
+
+      if (!normalizedValue || uniqueValues.has(normalizedValue)) {
+        continue;
+      }
+
+      uniqueValues.set(normalizedValue, trimmedValue);
     }
 
-    // Randomly select wrong answers
-    const wrongAnswers: string[] = [];
-    const tempOptions = [...uniqueOptions];
-
-    for (let i = 0; i < count - 1; i++) {
-      if (tempOptions.length === 0) break;
-      const idx = Math.floor(Math.random() * tempOptions.length);
-      wrongAnswers.push(tempOptions[idx]);
-      tempOptions.splice(idx, 1);
-    }
-
-    // Combine and shuffle
-    const choices = [correctAnswer, ...wrongAnswers];
-    for (let i = choices.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [choices[i], choices[j]] = [choices[j], choices[i]];
-    }
-
-    return choices;
+    return [...uniqueValues.values()];
   }
 
   private buildButtonRow(
-    options: string[],
-    type: "title" | "artist",
+    question: MultipleChoiceQuestion,
+    sessionId: string,
   ): ActionRowBuilder<ButtonBuilder> {
-    const buttons = options.map((option) => {
-      const normalizedOption = this.normalizeAnswer(option);
-      return new ButtonBuilder()
-        .setCustomId(`${type}_${normalizedOption}`)
-        .setLabel(option.substring(0, 80))
-        .setStyle(ButtonStyle.Primary);
-    });
-
-    return new ActionRowBuilder<ButtonBuilder>().addComponents(
-      buttons.slice(0, 4),
+    const buttons = question.options.slice(0, 4).map((option, index) =>
+      new ButtonBuilder()
+        .setCustomId(
+          this.buildQuestionCustomId(sessionId, question.stage, index),
+        )
+        .setLabel(this.formatButtonLabel(option.label))
+        .setStyle(ButtonStyle.Primary),
     );
+
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
   }
 
-  private async runGuessRound(options: {
-    channel: TextBasedChannel;
-    guildId: string;
-    userId: string;
-    painting: PaintingGameArtwork;
-  }): Promise<GuessRoundResult> {
-    // This method is replaced by playRound
+  private buildQuestionCustomId(
+    sessionId: string,
+    stage: QuestionStage,
+    optionIndex: number,
+  ) {
+    return `pg:${sessionId}:${stage}:${optionIndex}`;
+  }
+
+  private parseQuestionCustomId(customId: string): ParsedCustomId | null {
+    const parts = customId.split(":");
+
+    if (parts.length !== 4) {
+      return null;
+    }
+
+    const [prefix, sessionId, stage, optionIndexRaw] = parts;
+
+    if (prefix !== "pg") {
+      return null;
+    }
+
+    if (stage !== "title" && stage !== "artist") {
+      return null;
+    }
+
+    const optionIndex = Number(optionIndexRaw);
+
+    if (!Number.isInteger(optionIndex) || optionIndex < 0) {
+      return null;
+    }
+
     return {
-      titleGuessed: false,
-      artistGuessed: false,
+      sessionId,
+      stage,
+      optionIndex,
     };
   }
 
-  private async awaitNextGuess(
-    channel: TextBasedChannel,
-    filter: (message: Message) => boolean,
-    timeLeftMs: number,
+  private async disableMessageButtons(
+    message: Message,
+    row: ActionRowBuilder<ButtonBuilder>,
   ) {
-    try {
-      const collected = await channel.awaitMessages({
-        filter,
-        max: 1,
-        time: timeLeftMs,
-        errors: ["time"],
-      });
+    const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      row.components.map((component) =>
+        ButtonBuilder.from(component.toJSON()).setDisabled(true),
+      ),
+    );
 
-      return collected.first()?.content ?? null;
-    } catch {
-      return null;
+    try {
+      await message.edit({
+        components: [disabledRow],
+      });
+    } catch (error) {
+      this.logError("Failed to disable picture game buttons:", error);
     }
   }
 
-  private buildTimeoutMessage(
-    painting: PaintingGameArtwork,
-    result: GuessRoundResult,
-  ) {
-    const missingParts: string[] = [];
+  private formatButtonLabel(label: string) {
+    const normalizedLabel = label.replace(/\s+/g, " ").trim();
 
-    if (!result.titleGuessed) {
-      missingParts.push(`maali nimi oli "${painting.title}"`);
+    if (!normalizedLabel) {
+      return "Tundmatu";
     }
 
-    if (!result.artistGuessed) {
-      missingParts.push(`autor oli ${painting.artist}`);
+    if (normalizedLabel.length <= 80) {
+      return normalizedLabel;
     }
 
-    return `Aeg sai otsa! Õige vastus: "${painting.title}" — ${
-      painting.artist
-    }. Puudu jäi: ${missingParts.join(", ")}.`;
+    return `${normalizedLabel.slice(0, 77)}...`;
+  }
+
+  private createSessionId() {
+    return `${Date.now().toString(36)}${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
   }
 
   private addAndGetPoints(guildId: string, userId: string, points: number) {
@@ -503,84 +577,8 @@ export class PictureGameCommand extends Command {
     return PointsService.getPoints(guildId, userId);
   }
 
-  private checkGuess(
-    response: string,
-    painting: PaintingGameArtwork,
-  ): GuessCheckResult {
-    return {
-      titleCorrect: this.answerContainsTitle(response, painting.title),
-      artistCorrect: this.answerContainsArtist(response, painting.artist),
-    };
-  }
-
-  private answerContainsTitle(input: string, title: string) {
-    const normalizedInput = this.normalizeAnswer(input);
-    const titleVariants = this.getTitleVariants(title);
-
-    if (!normalizedInput || titleVariants.length === 0) {
-      return false;
-    }
-
-    return titleVariants.some((variant) =>
-      this.normalizedTextContainsPhrase(normalizedInput, variant),
-    );
-  }
-
-  private answerContainsArtist(input: string, artist: string) {
-    const normalizedInput = this.normalizeAnswer(input);
-    const artistVariants = this.getArtistVariants(artist);
-
-    if (!normalizedInput || artistVariants.length === 0) {
-      return false;
-    }
-
-    return artistVariants.some((variant) =>
-      this.normalizedTextContainsPhrase(normalizedInput, variant),
-    );
-  }
-
-  private getTitleVariants(title: string) {
-    const normalizedTitle = this.normalizeAnswer(title);
-
-    if (!normalizedTitle) {
-      return [];
-    }
-
-    const withoutLeadingArticle = normalizedTitle.replace(
-      /^(the|a|an|la|le|les|el|il|lo|die|der|das)\s+/,
-      "",
-    );
-
-    return this.uniqueNonEmpty([normalizedTitle, withoutLeadingArticle]);
-  }
-
-  private getArtistVariants(artist: string) {
-    const normalizedArtist = this.normalizeAnswer(artist);
-
-    if (!normalizedArtist) {
-      return [];
-    }
-
-    const parts = normalizedArtist.split(" ").filter(Boolean);
-
-    const lastName = parts.at(-1);
-    const lastTwoNames = parts.length >= 2 ? parts.slice(-2).join(" ") : "";
-    const lastThreeNames = parts.length >= 3 ? parts.slice(-3).join(" ") : "";
-
-    return this.uniqueNonEmpty([
-      normalizedArtist,
-      lastName && lastName.length >= 4 ? lastName : "",
-      lastTwoNames.length >= 4 ? lastTwoNames : "",
-      lastThreeNames.length >= 4 ? lastThreeNames : "",
-    ]);
-  }
-
-  private normalizedTextContainsPhrase(text: string, phrase: string) {
-    if (!text || !phrase) {
-      return false;
-    }
-
-    return ` ${text} `.includes(` ${phrase} `);
+  private formatPoints(points: number) {
+    return Number.isInteger(points) ? points.toString() : points.toFixed(1);
   }
 
   private normalizeAnswer(value: string) {
@@ -591,16 +589,6 @@ export class PictureGameCommand extends Command {
       .replace(/[^a-z0-9\s]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
-  }
-
-  private uniqueNonEmpty(values: Array<string | undefined>) {
-    return [
-      ...new Set(values.filter((value): value is string => Boolean(value))),
-    ];
-  }
-
-  private formatPoints(points: number) {
-    return Number.isInteger(points) ? points.toString() : points.toFixed(1);
   }
 
   private addRecentArtwork(id: string) {
@@ -622,9 +610,9 @@ export class PictureGameCommand extends Command {
     }
   }
 
-  private async fetchRandomArtwork(): Promise<PaintingGameArtwork> {
-    const artworks = await this.getFamousArtworks();
-
+  private selectRandomArtwork(
+    artworks: PaintingGameArtwork[],
+  ): PaintingGameArtwork {
     const unseenArtworks = artworks.filter(
       (artwork) => !this.recentArtworkIds.has(artwork.id),
     );
@@ -754,23 +742,94 @@ export class PictureGameCommand extends Command {
   }
 
   private normalizeImageUrl(url: string) {
-    const secureUrl = url.replace(/^http:/, "https:");
+    return url.replace(/^http:/, "https:");
+  }
+
+  private async getDiscordSafeImageUrl(imageUrl: string) {
+    const normalizedUrl = this.normalizeImageUrl(imageUrl);
+
+    if (!this.isCommonsSpecialFilePathUrl(normalizedUrl)) {
+      return normalizedUrl;
+    }
+
+    const previewUrl = this.addCommonsPreviewWidth(normalizedUrl, 900);
 
     try {
-      const parsedUrl = new URL(secureUrl);
+      const response = await axios.head(previewUrl, {
+        timeout: 10_000,
+        maxRedirects: 0,
+        validateStatus: (status) => status >= 200 && status < 400,
+        headers: {
+          "User-Agent": this.userAgent,
+          Accept: "image/jpeg,image/png,image/webp,image/*,*/*;q=0.8",
+        },
+      });
 
-      const isCommonsFilePath =
+      const location = response.headers.location;
+
+      if (!location) {
+        console.log("Wikimedia image URL did not redirect:", {
+          original: imageUrl,
+          preview: previewUrl,
+          status: response.status,
+        });
+
+        return previewUrl;
+      }
+
+      const directUrl = this.normalizeRedirectLocation(previewUrl, location);
+
+      console.log("Resolved artwork image URL:", {
+        original: imageUrl,
+        preview: previewUrl,
+        direct: directUrl,
+      });
+
+      return directUrl;
+    } catch (error) {
+      this.logError("Failed to resolve Wikimedia image URL:", error);
+      return previewUrl;
+    }
+  }
+
+  private isCommonsSpecialFilePathUrl(url: string) {
+    try {
+      const parsedUrl = new URL(url);
+
+      return (
         parsedUrl.hostname === "commons.wikimedia.org" &&
-        parsedUrl.pathname.includes("/wiki/Special:FilePath/");
+        parsedUrl.pathname.includes("/wiki/Special:FilePath/")
+      );
+    } catch {
+      return false;
+    }
+  }
 
-      if (isCommonsFilePath && !parsedUrl.searchParams.has("width")) {
-        parsedUrl.searchParams.set("width", "900");
+  private addCommonsPreviewWidth(url: string, width: number) {
+    try {
+      const parsedUrl = new URL(url);
+
+      if (!parsedUrl.searchParams.has("width")) {
+        parsedUrl.searchParams.set("width", width.toString());
       }
 
       return parsedUrl.toString();
     } catch {
-      return secureUrl;
+      return url;
     }
+  }
+
+  private normalizeRedirectLocation(baseUrl: string, location: string) {
+    if (location.startsWith("//")) {
+      return `https:${location}`;
+    }
+
+    if (location.startsWith("/")) {
+      const base = new URL(baseUrl);
+      return `${base.origin}${location}`;
+    }
+
+    return location.replace(/^http:/, "https:");
   }
 
   private getRandomItem<T>(items: readonly T[]): T {
@@ -792,6 +851,7 @@ export class PictureGameCommand extends Command {
         await interaction.editReply({
           content: message,
           embeds: [],
+          components: [],
         });
 
         return;
