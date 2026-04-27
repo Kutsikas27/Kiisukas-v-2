@@ -34,12 +34,39 @@ interface WikidataSparqlResponse {
   };
 }
 
+interface CommonsImageInfo {
+  url?: string;
+  thumburl?: string;
+  mime?: string;
+  width?: number;
+  height?: number;
+  thumbwidth?: number;
+  thumbheight?: number;
+}
+
+interface CommonsImageInfoPage {
+  pageid?: number;
+  missing?: string;
+  imageinfo?: CommonsImageInfo[];
+}
+
+interface CommonsImageInfoResponse {
+  query?: {
+    pages?: Record<string, CommonsImageInfoPage>;
+  };
+}
+
 interface PaintingGameArtwork {
   id: string;
   title: string;
   artist: string;
   imageUrl: string;
   sourceUrl: string;
+}
+
+interface SelectedArtwork {
+  painting: PaintingGameArtwork;
+  imageUrl: string;
 }
 
 type QuestionStage = "title" | "artist";
@@ -85,7 +112,11 @@ export class PictureGameCommand extends Command {
   private famousArtworkCacheFetchedAt = 0;
   private readonly famousArtworkCacheTtlMs = 1000 * 60 * 60 * 24;
 
+  private readonly resolvedImageUrlCache = new Map<string, string | null>();
+  private readonly maxResolvedImageUrlCacheSize = 500;
+
   private readonly wikidataSparqlUrl = "https://query.wikidata.org/sparql";
+  private readonly commonsApiUrl = "https://commons.wikimedia.org/w/api.php";
 
   private readonly userAgent =
     process.env.WIKIDATA_USER_AGENT ??
@@ -140,16 +171,15 @@ export class PictureGameCommand extends Command {
       await interaction.deferReply();
 
       const allArtworks = await this.getFamousArtworks();
-      const painting = this.selectRandomArtwork(allArtworks);
-      const imageUrl = await this.getDiscordSafeImageUrl(painting.imageUrl);
+      const selectedArtwork = await this.selectRandomArtworkWithImage(allArtworks);
 
       await this.playRound({
         interaction,
         channel,
         guildId: guild.id,
-        painting,
+        painting: selectedArtwork.painting,
         allArtworks,
-        imageUrl,
+        imageUrl: selectedArtwork.imageUrl,
       });
 
       return;
@@ -385,6 +415,7 @@ export class PictureGameCommand extends Command {
   ) {
     return new EmbedBuilder()
       .setTitle(question.title)
+      .setURL(painting.sourceUrl)
       .setDescription(
         [
           question.description,
@@ -609,23 +640,49 @@ export class PictureGameCommand extends Command {
     }
   }
 
-  private selectRandomArtwork(
+  private async selectRandomArtworkWithImage(
     artworks: PaintingGameArtwork[],
-  ): PaintingGameArtwork {
+  ): Promise<SelectedArtwork> {
     const unseenArtworks = artworks.filter(
       (artwork) => !this.recentArtworkIds.has(artwork.id),
     );
 
-    const candidates = unseenArtworks.length > 0 ? unseenArtworks : artworks;
-    const randomArtwork = this.getRandomItem(candidates);
+    const baseCandidates = unseenArtworks.length > 0 ? unseenArtworks : artworks;
+    const candidates = this.shuffle(baseCandidates);
+    const maxAttempts = Math.min(candidates.length, 25);
 
-    this.addRecentArtwork(randomArtwork.id);
+    for (let i = 0; i < maxAttempts; i++) {
+      const painting = candidates[i];
+      const imageUrl = await this.getDiscordSafeImageUrl(painting.imageUrl);
 
-    console.log(
-      `Selected famous artwork: "${randomArtwork.title}" by ${randomArtwork.artist}, ID: ${randomArtwork.id}`,
-    );
+      if (!imageUrl) {
+        console.warn("Skipping artwork because image URL could not be resolved:", {
+          title: painting.title,
+          artist: painting.artist,
+          originalImageUrl: painting.imageUrl,
+        });
 
-    return randomArtwork;
+        continue;
+      }
+
+      this.addRecentArtwork(painting.id);
+
+      console.log("Selected famous artwork:", {
+        title: painting.title,
+        artist: painting.artist,
+        id: painting.id,
+        sourceUrl: painting.sourceUrl,
+        originalImageUrl: painting.imageUrl,
+        discordImageUrl: imageUrl,
+      });
+
+      return {
+        painting,
+        imageUrl,
+      };
+    }
+
+    throw new Error("Could not find an artwork with a Discord-renderable image");
   }
 
   private async getFamousArtworks(): Promise<PaintingGameArtwork[]> {
@@ -744,50 +801,116 @@ export class PictureGameCommand extends Command {
     return url.replace(/^http:/, "https:");
   }
 
-  private async getDiscordSafeImageUrl(imageUrl: string) {
+  private async getDiscordSafeImageUrl(imageUrl: string): Promise<string | null> {
     const normalizedUrl = this.normalizeImageUrl(imageUrl);
 
-    if (!this.isCommonsSpecialFilePathUrl(normalizedUrl)) {
-      return normalizedUrl;
+    if (this.resolvedImageUrlCache.has(normalizedUrl)) {
+      return this.resolvedImageUrlCache.get(normalizedUrl) ?? null;
     }
 
-    const previewUrl = this.addCommonsPreviewWidth(normalizedUrl, 900);
+    let resolvedUrl: string | null = null;
+
+    if (this.isCommonsSpecialFilePathUrl(normalizedUrl)) {
+      resolvedUrl = await this.fetchCommonsThumbnailUrl(normalizedUrl, 900);
+    } else {
+      resolvedUrl = await this.resolveRedirectUrl(normalizedUrl);
+    }
+
+    if (resolvedUrl) {
+      resolvedUrl = this.normalizeImageUrl(resolvedUrl);
+    }
+
+    this.rememberResolvedImageUrl(normalizedUrl, resolvedUrl);
+
+    return resolvedUrl;
+  }
+
+  private async fetchCommonsThumbnailUrl(
+    specialFilePathUrl: string,
+    width: number,
+  ): Promise<string | null> {
+    const fileName =
+      this.getCommonsFileNameFromSpecialFilePathUrl(specialFilePathUrl);
+
+    if (!fileName) {
+      console.warn("Could not parse Commons filename:", specialFilePathUrl);
+      return null;
+    }
 
     try {
-      const response = await axios.head(previewUrl, {
-        timeout: 10_000,
-        maxRedirects: 0,
-        validateStatus: (status) => status >= 200 && status < 400,
-        headers: {
-          "User-Agent": this.userAgent,
-          Accept: "image/jpeg,image/png,image/webp,image/*,*/*;q=0.8",
+      const response = await axios.get<CommonsImageInfoResponse>(
+        this.commonsApiUrl,
+        {
+          timeout: 10_000,
+          params: {
+            action: "query",
+            format: "json",
+            prop: "imageinfo",
+            titles: `File:${fileName}`,
+            iiprop: "url|mime|size",
+            iiurlwidth: width,
+            origin: "*",
+          },
+          headers: {
+            Accept: "application/json",
+            "User-Agent": this.userAgent,
+          },
         },
-      });
+      );
 
-      const location = response.headers.location;
+      const pages = response.data.query?.pages ?? {};
+      const imageInfo = Object.values(pages).find(
+        (page) => page.imageinfo?.[0],
+      )?.imageinfo?.[0];
 
-      if (!location) {
-        console.log("Wikimedia image URL did not redirect:", {
-          original: imageUrl,
-          preview: previewUrl,
-          status: response.status,
+      const thumbnailUrl = imageInfo?.thumburl ?? imageInfo?.url ?? null;
+
+      if (!thumbnailUrl) {
+        console.warn("Commons API did not return a thumbnail URL:", {
+          specialFilePathUrl,
+          fileName,
+          response: response.data,
         });
 
-        return previewUrl;
+        return null;
       }
 
-      const directUrl = this.normalizeRedirectLocation(previewUrl, location);
+      const safeThumbnailUrl = this.normalizeImageUrl(thumbnailUrl);
 
-      console.log("Resolved artwork image URL:", {
-        original: imageUrl,
-        preview: previewUrl,
-        direct: directUrl,
+      console.log("Resolved Commons thumbnail:", {
+        fileName,
+        mime: imageInfo?.mime,
+        original: specialFilePathUrl,
+        thumbnail: safeThumbnailUrl,
       });
 
-      return directUrl;
+      return safeThumbnailUrl;
     } catch (error) {
-      this.logError("Failed to resolve Wikimedia image URL:", error);
-      return previewUrl;
+      this.logError("Failed to fetch Commons thumbnail URL:", error);
+      return null;
+    }
+  }
+
+  private getCommonsFileNameFromSpecialFilePathUrl(url: string) {
+    try {
+      const parsedUrl = new URL(url);
+      const marker = "/wiki/Special:FilePath/";
+      const markerIndex = parsedUrl.pathname.indexOf(marker);
+
+      if (markerIndex === -1) {
+        return null;
+      }
+
+      const rawFileName = parsedUrl.pathname.slice(markerIndex + marker.length);
+
+      const decodedFileName = decodeURIComponent(rawFileName)
+        .replace(/^File:/i, "")
+        .replace(/_/g, " ")
+        .trim();
+
+      return decodedFileName || null;
+    } catch {
+      return null;
     }
   }
 
@@ -804,31 +927,51 @@ export class PictureGameCommand extends Command {
     }
   }
 
-  private addCommonsPreviewWidth(url: string, width: number) {
+  private async resolveRedirectUrl(url: string): Promise<string | null> {
     try {
-      const parsedUrl = new URL(url);
+      const response = await axios.head(url, {
+        timeout: 10_000,
+        maxRedirects: 5,
+        validateStatus: (status) => status >= 200 && status < 400,
+        headers: {
+          "User-Agent": this.userAgent,
+          Accept: "image/jpeg,image/png,image/webp,image/gif,image/*,*/*;q=0.8",
+        },
+      });
 
-      if (!parsedUrl.searchParams.has("width")) {
-        parsedUrl.searchParams.set("width", width.toString());
-      }
+      const responseUrl = (response.request as any)?.res?.responseUrl;
 
-      return parsedUrl.toString();
-    } catch {
-      return url;
+      return responseUrl ? this.normalizeImageUrl(responseUrl) : url;
+    } catch (error) {
+      this.logError("Failed to resolve image redirect URL:", error);
+      return null;
     }
   }
 
-  private normalizeRedirectLocation(baseUrl: string, location: string) {
-    if (location.startsWith("//")) {
-      return `https:${location}`;
+  private rememberResolvedImageUrl(
+    originalUrl: string,
+    resolvedUrl: string | null,
+  ) {
+    if (this.resolvedImageUrlCache.size >= this.maxResolvedImageUrlCacheSize) {
+      const oldestKey = this.resolvedImageUrlCache.keys().next().value;
+
+      if (oldestKey) {
+        this.resolvedImageUrlCache.delete(oldestKey);
+      }
     }
 
-    if (location.startsWith("/")) {
-      const base = new URL(baseUrl);
-      return `${base.origin}${location}`;
+    this.resolvedImageUrlCache.set(originalUrl, resolvedUrl);
+  }
+
+  private shuffle<T>(items: readonly T[]) {
+    const shuffled = [...items];
+
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
 
-    return location.replace(/^http:/, "https:");
+    return shuffled;
   }
 
   private getRandomItem<T>(items: readonly T[]): T {
