@@ -7,7 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node dist/index.js",
     "dev": "run-s build start",
-    "build": "tsc"
+    "build": "tsc",
+    "deploy": "node deploy.js"
   },
   "author": "",
   "license": "ISC",
