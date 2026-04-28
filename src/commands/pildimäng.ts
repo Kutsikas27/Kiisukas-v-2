@@ -54,40 +54,40 @@ export class PictureGameCommand extends Command {
   }
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
+    await interaction.deferReply();
+
     const guild = interaction.guild;
+    const channel = interaction.channel;
+    const channelId = interaction.channelId;
 
     if (!guild) {
-      return interaction.reply({
+      await interaction.editReply({
         content: "Seda käsku saab kasutada ainult serveris.",
-        ephemeral: true,
       });
+      return;
     }
 
-    const channel = interaction.channel;
-
     if (!channel?.isTextBased()) {
-      return interaction.reply({
+      await interaction.editReply({
         content: "Selles kanalis ei saa pildimängu käivitada.",
-        ephemeral: true,
       });
+      return;
     }
 
     const allowedChannelId = process.env.PICTURE_GAME_CHANNEL_ID;
 
-    if (allowedChannelId && interaction.channelId !== allowedChannelId) {
-      return interaction.reply({
+    if (allowedChannelId && channelId !== allowedChannelId) {
+      await interaction.editReply({
         content: "Kasuta seda käsku kanalis #pildimäng.",
-        ephemeral: true,
       });
+      return;
     }
 
-    const channelId = interaction.channelId;
-
     if (this.activeGameChannelIds.has(channelId)) {
-      return interaction.reply({
+      await interaction.editReply({
         content: "Pildimäng juba käib.",
-        ephemeral: true,
       });
+      return;
     }
 
     this.activeGameChannelIds.add(channelId);
@@ -96,8 +96,6 @@ export class PictureGameCommand extends Command {
     this.gameLoopControllers.set(channelId, abortController);
 
     try {
-      await interaction.deferReply();
-
       const allQuestions = await SheetsService.getTriviaQuestions();
 
       if (allQuestions.length === 0) {
@@ -114,14 +112,10 @@ export class PictureGameCommand extends Command {
         allQuestions,
         abortSignal: abortController.signal,
       });
-
-      return;
     } catch (error) {
       this.logError("Picture game failed:", error);
 
       await this.sendFailureMessage(interaction);
-
-      return;
     } finally {
       this.activeGameChannelIds.delete(channelId);
       this.gameLoopControllers.delete(channelId);
@@ -158,11 +152,10 @@ export class PictureGameCommand extends Command {
     const sessionId = this.createSessionId();
     const row = this.buildButtonRow(question, sessionId);
 
-    const message = await this.sendMessageWithImage(interaction, {
+    const message = await this.sendMessageWithOptionalImage(interaction, {
       triviaQuestion,
       question,
       components: [row],
-      isInitial: true,
     });
 
     const correctUserIds = await this.collectAnswers({
@@ -204,13 +197,12 @@ export class PictureGameCommand extends Command {
     };
   }
 
-  private async sendMessageWithImage(
+  private async sendMessageWithOptionalImage(
     interaction: Command.ChatInputCommandInteraction,
     options: {
       triviaQuestion: TriviaQuestion;
       question: MultipleChoiceQuestion;
       components: ActionRowBuilder<ButtonBuilder>[];
-      isInitial: boolean;
     },
   ) {
     const imageAttachment = this.resolveLocalImageAttachment(
@@ -218,7 +210,6 @@ export class PictureGameCommand extends Command {
     );
 
     const embed = this.buildQuestionEmbed(
-      options.triviaQuestion,
       options.question,
       imageAttachment?.embedUrl ?? null,
     );
@@ -231,17 +222,13 @@ export class PictureGameCommand extends Command {
         ]
       : [];
 
-    if (options.isInitial) {
-      await interaction.editReply({
-        embeds: [embed],
-        components: options.components,
-        files,
-      });
+    await interaction.editReply({
+      embeds: [embed],
+      components: options.components,
+      files,
+    });
 
-      return (await interaction.fetchReply()) as Message;
-    }
-
-    throw new Error("Non-initial picture game messages are not implemented.");
+    return (await interaction.fetchReply()) as Message;
   }
 
   private async collectAnswers(options: {
@@ -357,7 +344,6 @@ export class PictureGameCommand extends Command {
   }
 
   private buildQuestionEmbed(
-    triviaQuestion: TriviaQuestion,
     question: MultipleChoiceQuestion,
     imageSource: string | null,
   ) {
@@ -376,11 +362,6 @@ export class PictureGameCommand extends Command {
 
     if (imageSource) {
       embed.setImage(imageSource);
-    } else {
-      this.logError(
-        `Pildi embed source puudub. Sheets imageUrl: ${triviaQuestion.imageUrl}`,
-        null,
-      );
     }
 
     return embed;
@@ -545,12 +526,11 @@ export class PictureGameCommand extends Command {
   }
 
   private resolveLocalImageAttachment(
-    rawImagePath: string,
+    rawImagePath: string | null | undefined,
   ): LocalImageAttachment | null {
-    const imagePath = rawImagePath.replace(/\s+/g, " ").trim();
+    const imagePath = String(rawImagePath ?? "").trim();
 
     if (!imagePath) {
-      this.logError("Image path is empty.", null);
       return null;
     }
 
@@ -574,31 +554,36 @@ export class PictureGameCommand extends Command {
       };
     }
 
-    this.logError(
-      [
-        `Image file not found: ${rawImagePath}`,
-        `process.cwd(): ${process.cwd()}`,
-        `Checked paths:`,
-        ...candidates.map((candidatePath) => `- ${candidatePath}`),
-      ].join("\n"),
-      null,
-    );
+    this.logError(`Image file not found: ${imagePath}`, null);
 
     return null;
   }
 
   private getLocalImagePathCandidates(imagePath: string) {
     const fileName = basename(imagePath);
+    const fileNameWithoutExtension = fileName.replace(/\.[^.]+$/, "");
 
-    return Array.from(
-      new Set([
+    const possibleFileNames = [
+      fileName,
+      `${fileNameWithoutExtension}.png`,
+      `${fileNameWithoutExtension}.jpg`,
+      `${fileNameWithoutExtension}.jpeg`,
+      `${fileNameWithoutExtension}.webp`,
+    ];
+
+    const candidates: string[] = [];
+
+    for (const possibleFileName of possibleFileNames) {
+      candidates.push(
         path.resolve(imagePath),
         path.join(process.cwd(), imagePath),
-        path.join(process.cwd(), "pictures", fileName),
-        path.join(process.cwd(), "dist", "pictures", fileName),
-        path.join(process.cwd(), "..", "pictures", fileName),
-      ]),
-    );
+        path.join(process.cwd(), "pictures", possibleFileName),
+        path.join(process.cwd(), "dist", "pictures", possibleFileName),
+        path.join(process.cwd(), "..", "pictures", possibleFileName),
+      );
+    }
+
+    return Array.from(new Set(candidates));
   }
 
   private async sendFailureMessage(
@@ -608,19 +593,11 @@ export class PictureGameCommand extends Command {
       "Pildimängu ei õnnestunud käivitada. Proovi natuke hiljem uuesti.";
 
     try {
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({
-          content: message,
-          embeds: [],
-          components: [],
-        });
-
-        return;
-      }
-
-      await interaction.reply({
+      await interaction.editReply({
         content: message,
-        ephemeral: true,
+        embeds: [],
+        components: [],
+        files: [],
       });
     } catch (error) {
       this.logError("Failed to send picture game failure message:", error);
