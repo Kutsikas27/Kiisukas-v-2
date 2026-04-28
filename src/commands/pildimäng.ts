@@ -517,7 +517,6 @@ export class PictureGameCommand extends Command {
   }
 
   private getEmbedImageSource(imagePath: string): string | null {
-    // If it's a URL (http/https), use it directly
     if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
       return imagePath;
     }
