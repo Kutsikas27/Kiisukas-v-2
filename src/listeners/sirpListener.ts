@@ -8,11 +8,20 @@ import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";
 
+type SirpCategory = {
+  key: string;
+  label: string;
+  pageUrl: string;
+  feedUrl: string;
+};
+
 type SirpArticle = {
   title: string;
   link: string;
   description?: string;
   pubDate?: string;
+  categoryKey: string;
+  categoryLabel: string;
 };
 
 type SirpCheckOptions = {
@@ -30,8 +39,39 @@ type SendableChannel = {
   send: (payload: { embeds: EmbedBuilder[] }) => Promise<unknown>;
 };
 
-const PAGE_URL = "https://www.sirp.ee/category/kunst/";
-const FEED_URL = "https://www.sirp.ee/category/kunst/feed/";
+const SIRP_CATEGORIES: SirpCategory[] = [
+  {
+    key: "kunst",
+    label: "Kunst",
+    pageUrl: "https://www.sirp.ee/category/kunst/",
+    feedUrl: "https://www.sirp.ee/category/kunst/feed/",
+  },
+  {
+    key: "teater",
+    label: "Teater",
+    pageUrl: "https://www.sirp.ee/category/teater/",
+    feedUrl: "https://www.sirp.ee/category/teater/feed/",
+  },
+  {
+    key: "muusika",
+    label: "Muusika",
+    pageUrl: "https://www.sirp.ee/category/muusika/",
+    feedUrl: "https://www.sirp.ee/category/muusika/feed/",
+  },
+  {
+    key: "kirjandus",
+    label: "Kirjandus",
+    pageUrl: "https://www.sirp.ee/category/kirjandus/",
+    feedUrl: "https://www.sirp.ee/category/kirjandus/feed/",
+  },
+  {
+    key: "film",
+    label: "Film",
+    pageUrl: "https://www.sirp.ee/category/film/",
+    feedUrl: "https://www.sirp.ee/category/film/feed/",
+  },
+];
+
 const SEEN_FILE = path.join(process.cwd(), "data", "sirp-kunst-seen.json");
 
 const ENABLE_AUTOMATIC_CHECK = true;
@@ -39,8 +79,7 @@ const CHECK_INTERVAL_MINUTES = 300;
 const POST_EXISTING_ON_FIRST_RUN = false;
 const MAX_POSTS_PER_CHECK = 5;
 
-const USER_AGENT =
-  "Kiisukas-v-2 Discord bot (+https://www.sirp.ee/category/kunst/)";
+const USER_AGENT = "Kiisukas-v-2 Discord bot (+https://www.sirp.ee/)";
 
 let timer: NodeJS.Timeout | null = null;
 let isChecking = false;
@@ -63,11 +102,11 @@ export class SirpKunstListener extends Listener {
   public run(client: Client) {
     if (!ENABLE_AUTOMATIC_CHECK) return;
 
-    startSirpKunstNews(client);
+    startSirpNews(client);
   }
 }
 
-function startSirpKunstNews(client: Client) {
+function startSirpNews(client: Client) {
   if (timer) return;
 
   const intervalMs = Math.max(CHECK_INTERVAL_MINUTES, 5) * 60_000;
@@ -79,7 +118,7 @@ function startSirpKunstNews(client: Client) {
   }, intervalMs);
 
   console.log(
-    `[Sirp] Kunsti uudiste automaatne kontroll käivitatud (${CHECK_INTERVAL_MINUTES} min).`,
+    `[Sirp] Uudiste automaatne kontroll käivitatud (${CHECK_INTERVAL_MINUTES} min).`,
   );
 }
 
@@ -122,12 +161,12 @@ export async function runSirpKunstCheck(
       };
     }
 
-    const articles = await getSirpKunstArticles();
+    const articles = await getSirpArticles();
 
     if (articles.length === 0) {
       return {
         ok: false,
-        message: "Sirbi Kunst rubriigist ei leitud ühtegi artiklit.",
+        message: "Sirbi rubriikidest ei leitud ühtegi artiklit.",
         fetched: 0,
         posted: 0,
       };
@@ -140,71 +179,102 @@ export async function runSirpKunstCheck(
 
       await postArticle(channel, latestArticle, true);
 
+      for (const category of SIRP_CATEGORIES) {
+        seen.add(categorySeenMarker(category.key));
+      }
+
       for (const article of articles) {
-        seen.add(articleKey(article.link));
+        seen.add(seenArticleKey(article));
       }
 
       await writeSeen(seen);
 
       return {
         ok: true,
-        message: `Testpostitus tehtud: ${latestArticle.title}`,
+        message: `Testpostitus tehtud: ${latestArticle.categoryLabel} / ${latestArticle.title}`,
         fetched: articles.length,
         posted: 1,
       };
     }
 
-    const firstRun = seen.size === 0;
+    const newArticles: SirpArticle[] = [];
+    let initializedCategories = 0;
 
-    if (firstRun && !POST_EXISTING_ON_FIRST_RUN) {
-      for (const article of articles) {
-        seen.add(articleKey(article.link));
+    for (const category of SIRP_CATEGORIES) {
+      const categoryArticles = articles.filter(
+        (article) => article.categoryKey === category.key,
+      );
+
+      if (categoryArticles.length === 0) continue;
+
+      const categoryInitialized = isCategoryInitialized(
+        category,
+        categoryArticles,
+        seen,
+      );
+
+      if (!categoryInitialized && !POST_EXISTING_ON_FIRST_RUN) {
+        for (const article of categoryArticles) {
+          seen.add(seenArticleKey(article));
+        }
+
+        seen.add(categorySeenMarker(category.key));
+        initializedCategories++;
+        continue;
       }
 
-      await writeSeen(seen);
+      seen.add(categorySeenMarker(category.key));
 
-      return {
-        ok: true,
-        message: `Esimene käivitus: ${articles.length} artiklit märgiti nähtuks. Postitusi ei saadetud.`,
-        fetched: articles.length,
-        posted: 0,
-      };
+      for (const article of categoryArticles) {
+        if (!isArticleSeen(article, seen)) {
+          newArticles.push(article);
+        }
+      }
     }
 
-    const newArticles = articles.filter(
-      (article) => !seen.has(articleKey(article.link)),
-    );
+    if (initializedCategories > 0) {
+      await writeSeen(seen);
+    }
 
     if (newArticles.length === 0) {
+      const initializedMessage =
+        initializedCategories > 0
+          ? ` Esmakordselt lisatud rubriike märgiti nähtuks: ${initializedCategories}.`
+          : "";
+
       return {
         ok: true,
-        message: `Fetch õnnestus. Uusi Sirbi Kunst artikleid ei ole. Kontrollitud artikleid: ${articles.length}.`,
+        message: `Fetch õnnestus. Uusi Sirbi artikleid ei ole. Kontrollitud artikleid: ${articles.length}.${initializedMessage}`,
         fetched: articles.length,
         posted: 0,
       };
     }
+
+    newArticles.sort((a, b) => getArticleTime(b) - getArticleTime(a));
 
     const articlesToPost = newArticles.slice(0, MAX_POSTS_PER_CHECK).reverse();
 
     for (const article of articlesToPost) {
       await postArticle(channel, article, false);
-      console.log(`[Sirp] Postitatud: ${article.title}`);
+      console.log(
+        `[Sirp] Postitatud: ${article.categoryLabel} / ${article.title}`,
+      );
     }
 
     for (const article of newArticles) {
-      seen.add(articleKey(article.link));
+      seen.add(seenArticleKey(article));
     }
 
     await writeSeen(seen);
 
     return {
       ok: true,
-      message: `Postitasin ${articlesToPost.length} uut Sirbi Kunst artiklit.`,
+      message: `Postitasin ${articlesToPost.length} uut Sirbi artiklit.`,
       fetched: articles.length,
       posted: articlesToPost.length,
     };
   } catch (error) {
-    console.error("[Sirp] Kunst uudiste kontroll ebaõnnestus:", error);
+    console.error("[Sirp] Uudiste kontroll ebaõnnestus:", error);
 
     return {
       ok: false,
@@ -227,10 +297,12 @@ async function postArticle(
     .setColor(0x71368a)
     .setTitle(article.title)
     .setURL(article.link)
-    .setDescription(article.description || "Uus kunstiuudis Sirbis.")
+    .setDescription(
+      article.description || `Uus Sirbi ${article.categoryLabel} artikkel.`,
+    )
     .addFields({
       name: "Allikas",
-      value: "Sirp / Kunst",
+      value: `Sirp / ${article.categoryLabel}`,
       inline: true,
     })
     .setFooter({
@@ -246,17 +318,55 @@ async function postArticle(
   await channel.send({ embeds: [embed] });
 }
 
-async function getSirpKunstArticles(): Promise<SirpArticle[]> {
+async function getSirpArticles(): Promise<SirpArticle[]> {
+  const allArticles: SirpArticle[] = [];
+
+  for (const category of SIRP_CATEGORIES) {
+    try {
+      const articles = await getSirpCategoryArticles(category);
+      allArticles.push(...articles);
+    } catch (error) {
+      console.warn(
+        `[Sirp] Rubriigi "${category.label}" lugemine ebaõnnestus:`,
+        error,
+      );
+    }
+  }
+
+  const deduplicatedArticles = new Map<string, SirpArticle>();
+
+  for (const article of allArticles) {
+    const key = articleKey(article.link);
+
+    if (!deduplicatedArticles.has(key)) {
+      deduplicatedArticles.set(key, article);
+    }
+  }
+
+  return Array.from(deduplicatedArticles.values()).sort(
+    (a, b) => getArticleTime(b) - getArticleTime(a),
+  );
+}
+
+async function getSirpCategoryArticles(
+  category: SirpCategory,
+): Promise<SirpArticle[]> {
   try {
-    return await getArticlesFromRss();
+    return await getArticlesFromRss(category);
   } catch (error) {
-    console.warn("[Sirp] RSS lugemine ebaõnnestus, proovin HTML lehte:", error);
-    return await getArticlesFromHtml();
+    console.warn(
+      `[Sirp] RSS lugemine ebaõnnestus rubriigis "${category.label}", proovin HTML lehte:`,
+      error,
+    );
+
+    return await getArticlesFromHtml(category);
   }
 }
 
-async function getArticlesFromRss(): Promise<SirpArticle[]> {
-  const feed = await parser.parseURL(FEED_URL);
+async function getArticlesFromRss(
+  category: SirpCategory,
+): Promise<SirpArticle[]> {
+  const feed = await parser.parseURL(category.feedUrl);
 
   return feed.items
     .filter((item) => item.title && item.link)
@@ -267,14 +377,18 @@ async function getArticlesFromRss(): Promise<SirpArticle[]> {
         item.contentSnippet ||
           item.summary ||
           item.content ||
-          "Uus kunstiuudis Sirbis.",
+          `Uus Sirbi ${category.label} artikkel.`,
       ).slice(0, 500),
       pubDate: item.isoDate || item.pubDate,
+      categoryKey: category.key,
+      categoryLabel: category.label,
     }));
 }
 
-async function getArticlesFromHtml(): Promise<SirpArticle[]> {
-  const html = await fetchText(PAGE_URL);
+async function getArticlesFromHtml(
+  category: SirpCategory,
+): Promise<SirpArticle[]> {
+  const html = await fetchText(category.pageUrl);
   const $ = cheerio.load(html);
 
   const articles: SirpArticle[] = [];
@@ -286,7 +400,7 @@ async function getArticlesFromHtml(): Promise<SirpArticle[]> {
 
     if (!title || !href) return;
 
-    const link = new URL(href, PAGE_URL).toString();
+    const link = new URL(href, category.pageUrl).toString();
     const key = articleKey(link);
 
     if (!link.includes("sirp.ee")) return;
@@ -298,7 +412,9 @@ async function getArticlesFromHtml(): Promise<SirpArticle[]> {
     articles.push({
       title,
       link,
-      description: "Uus kunstiuudis Sirbis.",
+      description: `Uus Sirbi ${category.label} artikkel.`,
+      categoryKey: category.key,
+      categoryLabel: category.label,
     });
   });
 
@@ -321,7 +437,10 @@ async function readSeen(): Promise<Set<string>> {
 async function writeSeen(seen: Set<string>) {
   await fs.mkdir(path.dirname(SEEN_FILE), { recursive: true });
 
-  const latest = Array.from(seen).slice(-500);
+  const values = Array.from(seen);
+  const markers = values.filter(isCategorySeenMarker);
+  const articleKeys = values.filter((value) => !isCategorySeenMarker(value));
+  const latest = Array.from(new Set([...markers, ...articleKeys.slice(-500)]));
 
   await fs.writeFile(SEEN_FILE, JSON.stringify(latest, null, 2), "utf8");
 }
@@ -335,12 +454,63 @@ function isSendableChannel(channel: unknown): channel is SendableChannel {
   );
 }
 
+function isCategoryInitialized(
+  category: SirpCategory,
+  articles: SirpArticle[],
+  seen: Set<string>,
+) {
+  if (seen.has(categorySeenMarker(category.key))) return true;
+
+  if (articles.some((article) => seen.has(seenArticleKey(article)))) {
+    return true;
+  }
+
+  // Tagasiühilduvus vana failiga, kus Kunsti lingid olid salvestatud ilma rubriigi prefiksita.
+  if (
+    category.key === "kunst" &&
+    (seen.size > 0 ||
+      articles.some((article) => seen.has(articleKey(article.link))))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isArticleSeen(article: SirpArticle, seen: Set<string>) {
+  return (
+    seen.has(seenArticleKey(article)) ||
+    // Tagasiühilduvus vana formaadiga.
+    seen.has(articleKey(article.link))
+  );
+}
+
+function seenArticleKey(article: SirpArticle) {
+  return `${article.categoryKey}:${articleKey(article.link)}`;
+}
+
+function categorySeenMarker(categoryKey: string) {
+  return `__category_initialized:${categoryKey}`;
+}
+
+function isCategorySeenMarker(value: string) {
+  return value.startsWith("__category_initialized:");
+}
+
 function articleKey(link: string) {
   return link.split("#")[0].replace(/\/$/, "").toLowerCase();
 }
 
 function cleanText(value: string) {
   return cheerio.load(value).text().replace(/\s+/g, " ").trim();
+}
+
+function getArticleTime(article: SirpArticle) {
+  if (!article.pubDate) return 0;
+
+  const time = new Date(article.pubDate).getTime();
+
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function fetchText(url: string, redirectsLeft = 3): Promise<string> {
