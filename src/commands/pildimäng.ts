@@ -9,6 +9,8 @@ import {
   Message,
   type TextBasedChannel,
 } from "discord.js";
+import path, { basename } from "path";
+import { existsSync } from "fs";
 import { PointsService } from "../services/points.service";
 import SheetsService, { TriviaQuestion } from "../services/sheets.service";
 
@@ -36,10 +38,7 @@ interface ParsedCustomId {
 })
 export class PictureGameCommand extends Command {
   private readonly activeGameChannelIds = new Set<string>();
-  private readonly gameLoopControllers = new Map<
-    string,
-    AbortController
-  >();
+  private readonly gameLoopControllers = new Map<string, AbortController>();
 
   public override registerApplicationCommands(registry: Command.Registry) {
     registry.registerChatInputCommand((builder) =>
@@ -129,75 +128,56 @@ export class PictureGameCommand extends Command {
     allQuestions: TriviaQuestion[];
     abortSignal: AbortSignal;
   }) {
-    const { interaction, channel, guildId, allQuestions, abortSignal } = options;
+    const { interaction, channel, guildId, allQuestions, abortSignal } =
+      options;
 
-    let questionIndex = 0;
-    let initialReply = true;
-
-    while (!abortSignal.aborted) {
-      const triviaQuestion = allQuestions[questionIndex];
-
-      const question = this.createQuestion({
-        title: "Trivia - Vastusta küsimus",
-        description: triviaQuestion.question,
-        correctAnswer: triviaQuestion.correctAnswer,
-        allAnswers: [
-          triviaQuestion.correctAnswer,
-          ...triviaQuestion.wrongAnswers,
-        ],
-      });
-
-      const sessionId = this.createSessionId();
-      const row = this.buildButtonRow(question, sessionId);
-
-      let message: Message;
-
-      if (initialReply) {
-        message = await this.sendMessageWithImage(interaction, {
-          embeds: [this.buildQuestionEmbed(triviaQuestion, question)],
-          components: [row],
-          isInitial: true,
-        });
-        initialReply = false;
-      } else {
-        message = await channel.send({
-          embeds: [this.buildQuestionEmbed(triviaQuestion, question)],
-          components: [row],
-          files: this.getImageFiles(triviaQuestion.imageUrl),
-        });
-      }
-
-      const correctUserIds = await this.collectAnswers({
-        message,
-        guildId,
-        sessionId,
-        question,
-        abortSignal,
-      });
-
-      await this.disableMessageButtons(message, row);
-
-      await channel.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("Õige vastus!")
-            .setDescription(
-              `Õige vastus: **${triviaQuestion.correctAnswer}**\n\nArvates õigesti: **${correctUserIds.size}**`,
-            )
-            .setColor("Gold"),
-        ],
-      });
-
-      // Wait before showing next question
-      await this.delay(3000, abortSignal);
-
-      if (abortSignal.aborted) {
-        break;
-      }
-
-      // Move to next question
-      questionIndex = (questionIndex + 1) % allQuestions.length;
+    if (abortSignal.aborted || allQuestions.length === 0) {
+      return;
     }
+
+    const questionIndex = Math.floor(Math.random() * allQuestions.length);
+    const triviaQuestion = allQuestions[questionIndex];
+
+    const question = this.createQuestion({
+      title: "Trivia - Vastusta küsimus",
+      description: triviaQuestion.question,
+      correctAnswer: triviaQuestion.correctAnswer,
+      allAnswers: [
+        triviaQuestion.correctAnswer,
+        ...triviaQuestion.wrongAnswers,
+      ],
+    });
+
+    const sessionId = this.createSessionId();
+    const row = this.buildButtonRow(question, sessionId);
+
+    const message = await this.sendMessageWithImage(interaction, {
+      embeds: [this.buildQuestionEmbed(triviaQuestion, question)],
+      components: [row],
+      isInitial: true,
+      imagePath: triviaQuestion.imageUrl,
+    });
+
+    const correctUserIds = await this.collectAnswers({
+      message,
+      guildId,
+      sessionId,
+      question,
+      abortSignal,
+    });
+
+    await this.disableMessageButtons(message, row);
+
+    await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("Õige vastus!")
+          .setDescription(
+            `Õige vastus: **${triviaQuestion.correctAnswer}**\n\nÕigeid vastajad: **${correctUserIds.size}**`,
+          )
+          .setColor("Gold"),
+      ],
+    });
   }
 
   private createQuestion(options: {
@@ -223,12 +203,16 @@ export class PictureGameCommand extends Command {
       embeds: EmbedBuilder[];
       components: ActionRowBuilder<ButtonBuilder>[];
       isInitial: boolean;
+      imagePath: string;
     },
   ) {
+    const files = this.getImageFiles(options.imagePath);
+
     if (options.isInitial) {
       await interaction.editReply({
         embeds: options.embeds,
         components: options.components,
+        files,
       });
 
       return (await interaction.fetchReply()) as Message;
@@ -270,10 +254,7 @@ export class PictureGameCommand extends Command {
           buttonInteraction.customId,
         );
 
-        if (
-          !parsedCustomId ||
-          parsedCustomId.sessionId !== sessionId
-        ) {
+        if (!parsedCustomId || parsedCustomId.sessionId !== sessionId) {
           await buttonInteraction.reply({
             content: "See nupp ei kuulu enam aktiivse mängu juurde.",
             ephemeral: true,
@@ -356,7 +337,7 @@ export class PictureGameCommand extends Command {
     triviaQuestion: TriviaQuestion,
     question: MultipleChoiceQuestion,
   ) {
-    return new EmbedBuilder()
+    const embed = new EmbedBuilder()
       .setTitle(question.title)
       .setDescription(
         [
@@ -367,8 +348,14 @@ export class PictureGameCommand extends Command {
           "Iga kasutaja saab vastata ühe korra.",
         ].join("\n"),
       )
-      .setImage(this.getImageUrl(triviaQuestion.imageUrl))
       .setColor("Blue");
+
+    const imageSource = this.getEmbedImageSource(triviaQuestion.imageUrl);
+    if (imageSource) {
+      embed.setImage(imageSource);
+    }
+
+    return embed;
   }
 
   private generateMultipleChoice(
@@ -430,37 +417,32 @@ export class PictureGameCommand extends Command {
     question: MultipleChoiceQuestion,
     sessionId: string,
   ): ActionRowBuilder<ButtonBuilder> {
-    const buttons = question.options.slice(0, 4).map((option, index) =>
-      new ButtonBuilder()
-        .setCustomId(this.buildQuestionCustomId(sessionId, index))
-        .setLabel(this.formatButtonLabel(option.label))
-        .setStyle(ButtonStyle.Primary),
-    );
+    const buttons = question.options
+      .slice(0, 4)
+      .map((option, index) =>
+        new ButtonBuilder()
+          .setCustomId(this.buildQuestionCustomId(sessionId, index))
+          .setLabel(this.formatButtonLabel(option.label))
+          .setStyle(ButtonStyle.Primary),
+      );
 
     return new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
   }
 
-  private buildQuestionCustomId(
-    sessionId: string,
-    optionIndex: number,
-  ) {
-    return `trivia:${sessionId}:${optionIndex}`;
+  private buildQuestionCustomId(sessionId: string, optionIndex: number) {
+    return `pg:${sessionId}:${optionIndex}`;
   }
 
   private parseQuestionCustomId(customId: string): ParsedCustomId | null {
     const parts = customId.split(":");
 
-    if (parts.length !== 4) {
+    if (parts.length !== 3) {
       return null;
     }
 
-    const [prefix, sessionId, stage, optionIndexRaw] = parts;
+    const [prefix, sessionId, optionIndexRaw] = parts;
 
-    if (prefix !== "pg") {
-      return null;
-    }
-
-    if (stage !== "title" && stage !== "artist") {
+    if (prefix !== "pg" && prefix !== "trivia") {
       return null;
     }
 
@@ -534,26 +516,55 @@ export class PictureGameCommand extends Command {
       .trim();
   }
 
-  private getImageUrl(imagePath: string): string {
-    // If it's a URL, return as-is
+  private getEmbedImageSource(imagePath: string): string | null {
+    // If it's a URL (http/https), use it directly
     if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
       return imagePath;
     }
 
-    // If it's a local path, construct Discord-compatible URL
-    // Assuming images are in /data/pildimäng-pildid/ folder on Fly.io
-    return imagePath;
+    // Try to find local file
+    const resolvedPath = path.resolve(imagePath);
+
+    if (existsSync(resolvedPath)) {
+      const fileName = basename(imagePath);
+      return `attachment://${fileName}`;
+    }
+
+    // Try without resolve (in case it's relative to pictures/)
+    const picturesPath = path.join(
+      process.cwd(),
+      "pictures",
+      basename(imagePath),
+    );
+    if (existsSync(picturesPath)) {
+      const fileName = basename(imagePath);
+      return `attachment://${fileName}`;
+    }
+
+    // If file doesn't exist, return null to skip image
+    return null;
   }
 
   private getImageFiles(imagePath: string) {
-    // If local path, load from filesystem
-    if (!imagePath.startsWith("http")) {
-      try {
-        return [imagePath];
-      } catch {
-        return [];
-      }
+    // Only process local files (not URLs)
+    if (imagePath.startsWith("http")) {
+      return [];
     }
+
+    // Try exact path first
+    let resolvedPath = path.resolve(imagePath);
+    if (existsSync(resolvedPath)) {
+      return [resolvedPath];
+    }
+
+    // Try pictures/ folder
+    resolvedPath = path.join(process.cwd(), "pictures", basename(imagePath));
+    if (existsSync(resolvedPath)) {
+      return [resolvedPath];
+    }
+
+    // If nothing found, log it for debugging
+    this.logError(`Image file not found: ${imagePath}`, null);
     return [];
   }
 
