@@ -11,6 +11,7 @@
     "get-service-account": "npx tsx get-service-account.ts",
     "populate-sheet": "npx tsx populate-sheet.ts",
     "download-thumbnails": "npx tsx download-thumbnails.ts",
+    "optimize-images": "npx tsx optimize-images.ts",
     "deploy": "node deploy.js"
   },
   "author": "",
