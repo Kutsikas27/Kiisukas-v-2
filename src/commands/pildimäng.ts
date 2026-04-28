@@ -9,67 +9,8 @@ import {
   Message,
   type TextBasedChannel,
 } from "discord.js";
-import axios from "axios";
 import { PointsService } from "../services/points.service";
-
-interface WikidataBindingValue {
-  type: string;
-  value: string;
-}
-
-interface WikidataFamousPaintingBinding {
-  item?: WikidataBindingValue;
-  itemLabel?: WikidataBindingValue;
-  image?: WikidataBindingValue;
-  catalogCode?: WikidataBindingValue;
-  creatorLabel?: WikidataBindingValue;
-}
-
-interface WikidataSparqlResponse {
-  head: {
-    vars: string[];
-  };
-  results: {
-    bindings: WikidataFamousPaintingBinding[];
-  };
-}
-
-interface CommonsImageInfo {
-  url?: string;
-  thumburl?: string;
-  mime?: string;
-  width?: number;
-  height?: number;
-  thumbwidth?: number;
-  thumbheight?: number;
-}
-
-interface CommonsImageInfoPage {
-  pageid?: number;
-  missing?: string;
-  imageinfo?: CommonsImageInfo[];
-}
-
-interface CommonsImageInfoResponse {
-  query?: {
-    pages?: Record<string, CommonsImageInfoPage>;
-  };
-}
-
-interface PaintingGameArtwork {
-  id: string;
-  title: string;
-  artist: string;
-  imageUrl: string;
-  sourceUrl: string;
-}
-
-interface SelectedArtwork {
-  painting: PaintingGameArtwork;
-  imageUrl: string;
-}
-
-type QuestionStage = "title" | "artist";
+import SheetsService, { TriviaQuestion } from "../services/sheets.service";
 
 interface MultipleChoiceOption {
   label: string;
@@ -77,7 +18,6 @@ interface MultipleChoiceOption {
 }
 
 interface MultipleChoiceQuestion {
-  stage: QuestionStage;
   title: string;
   description: string;
   correctAnswer: string;
@@ -85,42 +25,21 @@ interface MultipleChoiceQuestion {
   points: number;
 }
 
-interface StageResult {
-  answeredUserIds: Set<string>;
-  correctUserIds: Set<string>;
-  wrongUserIds: Set<string>;
-}
-
 interface ParsedCustomId {
   sessionId: string;
-  stage: QuestionStage;
   optionIndex: number;
 }
 
 @ApplyOptions<Command.Options>({
   name: "pildimäng",
-  description: "Alusta pildimängu, kus tuleb ära arvata kuulus maal või autor",
+  description: "Alusta trivia mängu piltidega",
 })
 export class PictureGameCommand extends Command {
   private readonly activeGameChannelIds = new Set<string>();
-
-  private readonly recentArtworkIds = new Set<string>();
-  private readonly recentArtworkQueue: string[] = [];
-  private readonly maxRecentArtworks = 50;
-
-  private famousArtworkCache: PaintingGameArtwork[] = [];
-  private famousArtworkCacheFetchedAt = 0;
-  private readonly famousArtworkCacheTtlMs = 1000 * 60 * 60 * 24;
-
-  private readonly resolvedImageUrlCache = new Map<string, string | null>();
-  private readonly maxResolvedImageUrlCacheSize = 500;
-
-  private readonly wikidataSparqlUrl = "https://query.wikidata.org/sparql";
-  private readonly commonsApiUrl = "https://commons.wikimedia.org/w/api.php";
-
-  private readonly userAgent =
-    process.env.WIKIDATA_USER_AGENT ??
-    "pildimang-discord-bot/1.0 (educational Discord art guessing game)";
+  private readonly gameLoopControllers = new Map<
+    string,
+    AbortController
+  >();
 
   public override registerApplicationCommands(registry: Command.Registry) {
     registry.registerChatInputCommand((builder) =>
@@ -167,21 +86,27 @@ export class PictureGameCommand extends Command {
 
     this.activeGameChannelIds.add(channelId);
 
+    const abortController = new AbortController();
+    this.gameLoopControllers.set(channelId, abortController);
+
     try {
       await interaction.deferReply();
 
-      const allArtworks = await this.getFamousArtworks();
-      const selectedArtwork = await this.selectRandomArtworkWithImage(
-        allArtworks,
-      );
+      const allQuestions = await SheetsService.getTriviaQuestions();
 
-      await this.playRound({
+      if (allQuestions.length === 0) {
+        await interaction.editReply({
+          content: "Küsimusi ei leitud.",
+        });
+        return;
+      }
+
+      await this.gameLoop({
         interaction,
         channel,
         guildId: guild.id,
-        painting: selectedArtwork.painting,
-        allArtworks,
-        imageUrl: selectedArtwork.imageUrl,
+        allQuestions,
+        abortSignal: abortController.signal,
       });
 
       return;
@@ -193,94 +118,97 @@ export class PictureGameCommand extends Command {
       return;
     } finally {
       this.activeGameChannelIds.delete(channelId);
+      this.gameLoopControllers.delete(channelId);
     }
   }
 
-  private async playRound(options: {
+  private async gameLoop(options: {
     interaction: Command.ChatInputCommandInteraction;
     channel: TextBasedChannel;
     guildId: string;
-    painting: PaintingGameArtwork;
-    allArtworks: PaintingGameArtwork[];
-    imageUrl: string;
+    allQuestions: TriviaQuestion[];
+    abortSignal: AbortSignal;
   }) {
-    const { interaction, channel, guildId, painting, allArtworks, imageUrl } =
-      options;
+    const { interaction, channel, guildId, allQuestions, abortSignal } = options;
 
-    const sessionId = this.createSessionId();
+    let questionIndex = 0;
+    let initialReply = true;
 
-    const titleQuestion = this.createQuestion({
-      stage: "title",
-      title: "Pildimäng - Maali nimi",
-      description:
-        "Arva ära selle kuulsa maali nimi, valides ühe vastusevariandi alt!",
-      correctAnswer: painting.title,
-      allAnswers: allArtworks.map((artwork) => artwork.title),
-    });
+    while (!abortSignal.aborted) {
+      const triviaQuestion = allQuestions[questionIndex];
 
-    const titleRow = this.buildButtonRow(titleQuestion, sessionId);
+      const question = this.createQuestion({
+        title: "Trivia - Vastusta küsimus",
+        description: triviaQuestion.question,
+        correctAnswer: triviaQuestion.correctAnswer,
+        allAnswers: [
+          triviaQuestion.correctAnswer,
+          ...triviaQuestion.wrongAnswers,
+        ],
+      });
 
-    const titleMessage = await interaction.editReply({
-      embeds: [this.buildQuestionEmbed(painting, imageUrl, titleQuestion)],
-      components: [titleRow],
-    });
+      const sessionId = this.createSessionId();
+      const row = this.buildButtonRow(question, sessionId);
 
-    const titleResult = await this.collectStageAnswers({
-      message: titleMessage,
-      guildId,
-      sessionId,
-      question: titleQuestion,
-    });
+      let message: Message;
 
-    await this.disableMessageButtons(titleMessage, titleRow);
+      if (initialReply) {
+        message = await this.sendMessageWithImage(interaction, {
+          embeds: [this.buildQuestionEmbed(triviaQuestion, question)],
+          components: [row],
+          isInitial: true,
+        });
+        initialReply = false;
+      } else {
+        message = await channel.send({
+          embeds: [this.buildQuestionEmbed(triviaQuestion, question)],
+          components: [row],
+          files: this.getImageFiles(triviaQuestion.imageUrl),
+        });
+      }
 
-    const artistQuestion = this.createQuestion({
-      stage: "artist",
-      title: "Pildimäng - Autor",
-      description: "Nüüd arva ära selle maali autor!",
-      correctAnswer: painting.artist,
-      allAnswers: allArtworks.map((artwork) => artwork.artist),
-    });
+      const correctUserIds = await this.collectAnswers({
+        message,
+        guildId,
+        sessionId,
+        question,
+        abortSignal,
+      });
 
-    const artistRow = this.buildButtonRow(artistQuestion, sessionId);
+      await this.disableMessageButtons(message, row);
 
-    const artistMessage = await channel.send({
-      embeds: [this.buildQuestionEmbed(painting, imageUrl, artistQuestion)],
-      components: [artistRow],
-    });
+      await channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Õige vastus!")
+            .setDescription(
+              `Õige vastus: **${triviaQuestion.correctAnswer}**\n\nArvates õigesti: **${correctUserIds.size}**`,
+            )
+            .setColor("Gold"),
+        ],
+      });
 
-    const artistResult = await this.collectStageAnswers({
-      message: artistMessage,
-      guildId,
-      sessionId,
-      question: artistQuestion,
-    });
+      // Wait before showing next question
+      await this.delay(3000, abortSignal);
 
-    await this.disableMessageButtons(artistMessage, artistRow);
+      if (abortSignal.aborted) {
+        break;
+      }
 
-    await channel.send({
-      embeds: [
-        this.buildFinalAnswerEmbed({
-          painting,
-          imageUrl,
-          titleResult,
-          artistResult,
-        }),
-      ],
-    });
+      // Move to next question
+      questionIndex = (questionIndex + 1) % allQuestions.length;
+    }
   }
 
   private createQuestion(options: {
-    stage: QuestionStage;
     title: string;
     description: string;
     correctAnswer: string;
     allAnswers: string[];
   }): MultipleChoiceQuestion {
-    const { stage, title, description, correctAnswer, allAnswers } = options;
+    const { title, description, correctAnswer, allAnswers } = options;
 
     return {
-      stage,
       title,
       description,
       correctAnswer,
@@ -289,24 +217,42 @@ export class PictureGameCommand extends Command {
     };
   }
 
-  private async collectStageAnswers(options: {
+  private async sendMessageWithImage(
+    interaction: Command.ChatInputCommandInteraction,
+    options: {
+      embeds: EmbedBuilder[];
+      components: ActionRowBuilder<ButtonBuilder>[];
+      isInitial: boolean;
+    },
+  ) {
+    if (options.isInitial) {
+      await interaction.editReply({
+        embeds: options.embeds,
+        components: options.components,
+      });
+
+      return (await interaction.fetchReply()) as Message;
+    }
+
+    return null as any;
+  }
+
+  private async collectAnswers(options: {
     message: Message;
     guildId: string;
     sessionId: string;
     question: MultipleChoiceQuestion;
-  }): Promise<StageResult> {
-    const { message, guildId, sessionId, question } = options;
+    abortSignal: AbortSignal;
+  }): Promise<Set<string>> {
+    const { message, guildId, sessionId, question, abortSignal } = options;
 
-    const result: StageResult = {
-      answeredUserIds: new Set<string>(),
-      correctUserIds: new Set<string>(),
-      wrongUserIds: new Set<string>(),
-    };
+    const correctUserIds = new Set<string>();
+    const answeredUserIds = new Set<string>();
 
     const timeLimitMs = 30_000;
     const startedAt = Date.now();
 
-    while (true) {
+    while (!abortSignal.aborted) {
       const elapsed = Date.now() - startedAt;
       const timeLeft = Math.max(timeLimitMs - elapsed, 0);
 
@@ -326,8 +272,7 @@ export class PictureGameCommand extends Command {
 
         if (
           !parsedCustomId ||
-          parsedCustomId.sessionId !== sessionId ||
-          parsedCustomId.stage !== question.stage
+          parsedCustomId.sessionId !== sessionId
         ) {
           await buttonInteraction.reply({
             content: "See nupp ei kuulu enam aktiivse mängu juurde.",
@@ -338,7 +283,7 @@ export class PictureGameCommand extends Command {
 
         const currentUserId = buttonInteraction.user.id;
 
-        if (result.answeredUserIds.has(currentUserId)) {
+        if (answeredUserIds.has(currentUserId)) {
           await buttonInteraction.reply({
             content: "Sa oled juba sellele küsimusele vastanud!",
             ephemeral: true,
@@ -356,10 +301,10 @@ export class PictureGameCommand extends Command {
           continue;
         }
 
-        result.answeredUserIds.add(currentUserId);
+        answeredUserIds.add(currentUserId);
 
         if (selectedOption.isCorrect) {
-          result.correctUserIds.add(currentUserId);
+          correctUserIds.add(currentUserId);
 
           const points = this.addAndGetPoints(
             guildId,
@@ -373,7 +318,6 @@ export class PictureGameCommand extends Command {
                 .setTitle("✓ Õige vastus!")
                 .setDescription(
                   [
-                    `Õige vastus: **${question.correctAnswer}**`,
                     `+${this.formatPoints(question.points)} punkti`,
                     `Sul on nüüd **${this.formatPoints(points)}** punkti.`,
                   ].join("\n"),
@@ -385,8 +329,6 @@ export class PictureGameCommand extends Command {
 
           continue;
         }
-
-        result.wrongUserIds.add(currentUserId);
 
         const points = this.addAndGetPoints(
           guildId,
@@ -407,12 +349,11 @@ export class PictureGameCommand extends Command {
       }
     }
 
-    return result;
+    return correctUserIds;
   }
 
   private buildQuestionEmbed(
-    painting: PaintingGameArtwork,
-    imageUrl: string,
+    triviaQuestion: TriviaQuestion,
     question: MultipleChoiceQuestion,
   ) {
     return new EmbedBuilder()
@@ -426,33 +367,8 @@ export class PictureGameCommand extends Command {
           "Iga kasutaja saab vastata ühe korra.",
         ].join("\n"),
       )
-      .setImage(imageUrl)
+      .setImage(this.getImageUrl(triviaQuestion.imageUrl))
       .setColor("Blue");
-  }
-
-  private buildFinalAnswerEmbed(options: {
-    painting: PaintingGameArtwork;
-    imageUrl: string;
-    titleResult: StageResult;
-    artistResult: StageResult;
-  }) {
-    const { painting, imageUrl, titleResult, artistResult } = options;
-
-    return new EmbedBuilder()
-      .setTitle("Pildimäng läbi")
-      .setURL(painting.sourceUrl)
-      .setDescription(
-        [
-          `Õige vastus: **${painting.title}** — **${painting.artist}**`,
-          "",
-          `Maali nime arvas õigesti: **${titleResult.correctUserIds.size}**`,
-          `Autori arvas õigesti: **${artistResult.correctUserIds.size}**`,
-          "",
-          `[Allikas](${painting.sourceUrl})`,
-        ].join("\n"),
-      )
-      .setImage(imageUrl)
-      .setColor("Gold");
   }
 
   private generateMultipleChoice(
@@ -516,9 +432,7 @@ export class PictureGameCommand extends Command {
   ): ActionRowBuilder<ButtonBuilder> {
     const buttons = question.options.slice(0, 4).map((option, index) =>
       new ButtonBuilder()
-        .setCustomId(
-          this.buildQuestionCustomId(sessionId, question.stage, index),
-        )
+        .setCustomId(this.buildQuestionCustomId(sessionId, index))
         .setLabel(this.formatButtonLabel(option.label))
         .setStyle(ButtonStyle.Primary),
     );
@@ -528,10 +442,9 @@ export class PictureGameCommand extends Command {
 
   private buildQuestionCustomId(
     sessionId: string,
-    stage: QuestionStage,
     optionIndex: number,
   ) {
-    return `pg:${sessionId}:${stage}:${optionIndex}`;
+    return `trivia:${sessionId}:${optionIndex}`;
   }
 
   private parseQuestionCustomId(customId: string): ParsedCustomId | null {
@@ -559,7 +472,6 @@ export class PictureGameCommand extends Command {
 
     return {
       sessionId,
-      stage,
       optionIndex,
     };
   }
@@ -622,372 +534,38 @@ export class PictureGameCommand extends Command {
       .trim();
   }
 
-  private addRecentArtwork(id: string) {
-    if (this.recentArtworkIds.has(id)) {
-      return;
+  private getImageUrl(imagePath: string): string {
+    // If it's a URL, return as-is
+    if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
+      return imagePath;
     }
 
-    this.recentArtworkIds.add(id);
-    this.recentArtworkQueue.push(id);
-
-    if (this.recentArtworkQueue.length <= this.maxRecentArtworks) {
-      return;
-    }
-
-    const oldest = this.recentArtworkQueue.shift();
-
-    if (oldest) {
-      this.recentArtworkIds.delete(oldest);
-    }
+    // If it's a local path, construct Discord-compatible URL
+    // Assuming images are in /data/pildimäng-pildid/ folder on Fly.io
+    return imagePath;
   }
 
-  private async selectRandomArtworkWithImage(
-    artworks: PaintingGameArtwork[],
-  ): Promise<SelectedArtwork> {
-    const unseenArtworks = artworks.filter(
-      (artwork) => !this.recentArtworkIds.has(artwork.id),
-    );
-
-    const baseCandidates =
-      unseenArtworks.length > 0 ? unseenArtworks : artworks;
-    const candidates = this.shuffle(baseCandidates);
-    const maxAttempts = Math.min(candidates.length, 25);
-
-    for (let i = 0; i < maxAttempts; i++) {
-      const painting = candidates[i];
-      const imageUrl = await this.getDiscordSafeImageUrl(painting.imageUrl);
-
-      if (!imageUrl) {
-        console.warn(
-          "Skipping artwork because image URL could not be resolved:",
-          {
-            title: painting.title,
-            artist: painting.artist,
-            originalImageUrl: painting.imageUrl,
-          },
-        );
-
-        continue;
+  private getImageFiles(imagePath: string) {
+    // If local path, load from filesystem
+    if (!imagePath.startsWith("http")) {
+      try {
+        return [imagePath];
+      } catch {
+        return [];
       }
+    }
+    return [];
+  }
 
-      this.addRecentArtwork(painting.id);
+  private async delay(ms: number, abortSignal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(resolve, ms);
 
-      console.log("Selected famous artwork:", {
-        title: painting.title,
-        artist: painting.artist,
-        id: painting.id,
-        sourceUrl: painting.sourceUrl,
-        originalImageUrl: painting.imageUrl,
-        discordImageUrl: imageUrl,
+      abortSignal.addEventListener("abort", () => {
+        clearTimeout(timeout);
+        resolve();
       });
-
-      return {
-        painting,
-        imageUrl,
-      };
-    }
-
-    throw new Error(
-      "Could not find an artwork with a Discord-renderable image",
-    );
-  }
-
-  private async getFamousArtworks(): Promise<PaintingGameArtwork[]> {
-    const now = Date.now();
-    const cacheIsFresh =
-      this.famousArtworkCache.length > 0 &&
-      now - this.famousArtworkCacheFetchedAt < this.famousArtworkCacheTtlMs;
-
-    if (cacheIsFresh) {
-      return this.famousArtworkCache;
-    }
-
-    const artworks = await this.fetchFamousArtworksFromWikidata();
-
-    if (artworks.length === 0) {
-      throw new Error("Wikidata returned 0 famous paintings");
-    }
-
-    this.famousArtworkCache = artworks;
-    this.famousArtworkCacheFetchedAt = now;
-
-    console.log(`Fetched ${artworks.length} famous paintings from Wikidata`);
-
-    return artworks;
-  }
-
-  private async fetchFamousArtworksFromWikidata(): Promise<
-    PaintingGameArtwork[]
-  > {
-    const response = await axios.get<WikidataSparqlResponse>(
-      this.wikidataSparqlUrl,
-      {
-        timeout: 30_000,
-        params: {
-          query: this.getFamousPaintingsSparqlQuery(),
-          format: "json",
-        },
-        headers: {
-          Accept: "application/sparql-results+json",
-          "User-Agent": this.userAgent,
-        },
-      },
-    );
-
-    const artworks = response.data.results.bindings
-      .map((binding) => this.parseWikidataArtwork(binding))
-      .filter((artwork): artwork is PaintingGameArtwork => artwork !== null);
-
-    return this.deduplicateArtworks(artworks);
-  }
-
-  private parseWikidataArtwork(
-    binding: WikidataFamousPaintingBinding,
-  ): PaintingGameArtwork | null {
-    const itemUrl = binding.item?.value;
-    const title = binding.itemLabel?.value;
-    const artist = binding.creatorLabel?.value;
-    const imageUrl = binding.image?.value;
-
-    if (!itemUrl || !title || !artist || !imageUrl) {
-      return null;
-    }
-
-    return {
-      id: this.getWikidataIdFromUrl(itemUrl),
-      title,
-      artist,
-      imageUrl: this.normalizeImageUrl(imageUrl),
-      sourceUrl: this.getWikidataSourceUrl(itemUrl),
-    };
-  }
-
-  private deduplicateArtworks(artworks: PaintingGameArtwork[]) {
-    const uniqueArtworks = new Map<string, PaintingGameArtwork>();
-
-    for (const artwork of artworks) {
-      if (!uniqueArtworks.has(artwork.id)) {
-        uniqueArtworks.set(artwork.id, artwork);
-      }
-    }
-
-    return [...uniqueArtworks.values()];
-  }
-
-  private getFamousPaintingsSparqlQuery() {
-    return `
-      SELECT DISTINCT ?item ?itemLabel ?creatorLabel ?image ?catalogCode WHERE {
-        ?item p:P528 ?catalogStatement.
-        ?catalogStatement ps:P528 ?catalogCode.
-        ?catalogStatement pq:P972 wd:Q41634361.
-        ?item wdt:P18 ?image.
-
-        OPTIONAL {
-          ?item wdt:P170 ?creator.
-        }
-
-        SERVICE wikibase:label {
-          bd:serviceParam wikibase:language "en".
-        }
-      }
-      LIMIT 250
-    `;
-  }
-
-  private getWikidataIdFromUrl(url: string) {
-    const match = url.match(/\/entity\/(Q\d+)$/);
-    return match?.[1] ?? url;
-  }
-
-  private getWikidataSourceUrl(itemUrl: string) {
-    const id = this.getWikidataIdFromUrl(itemUrl);
-    return `https://www.wikidata.org/wiki/${id}`;
-  }
-
-  private normalizeImageUrl(url: string) {
-    return url.replace(/^http:/, "https:");
-  }
-
-  private async getDiscordSafeImageUrl(
-    imageUrl: string,
-  ): Promise<string | null> {
-    const normalizedUrl = this.normalizeImageUrl(imageUrl);
-
-    if (this.resolvedImageUrlCache.has(normalizedUrl)) {
-      return this.resolvedImageUrlCache.get(normalizedUrl) ?? null;
-    }
-
-    let resolvedUrl: string | null = null;
-
-    if (this.isCommonsSpecialFilePathUrl(normalizedUrl)) {
-      resolvedUrl = await this.fetchCommonsThumbnailUrl(normalizedUrl, 900);
-    } else {
-      resolvedUrl = await this.resolveRedirectUrl(normalizedUrl);
-    }
-
-    if (resolvedUrl) {
-      resolvedUrl = this.normalizeImageUrl(resolvedUrl);
-    }
-
-    this.rememberResolvedImageUrl(normalizedUrl, resolvedUrl);
-
-    return resolvedUrl;
-  }
-
-  private async fetchCommonsThumbnailUrl(
-    specialFilePathUrl: string,
-    width: number,
-  ): Promise<string | null> {
-    const fileName =
-      this.getCommonsFileNameFromSpecialFilePathUrl(specialFilePathUrl);
-
-    if (!fileName) {
-      console.warn("Could not parse Commons filename:", specialFilePathUrl);
-      return null;
-    }
-
-    try {
-      const response = await axios.get<CommonsImageInfoResponse>(
-        this.commonsApiUrl,
-        {
-          timeout: 10_000,
-          params: {
-            action: "query",
-            format: "json",
-            prop: "imageinfo",
-            titles: `File:${fileName}`,
-            iiprop: "url|mime|size",
-            iiurlwidth: width,
-            origin: "*",
-          },
-          headers: {
-            Accept: "application/json",
-            "User-Agent": this.userAgent,
-          },
-        },
-      );
-
-      const pages = response.data.query?.pages ?? {};
-      const imageInfo = Object.values(pages).find((page) => page.imageinfo?.[0])
-        ?.imageinfo?.[0];
-
-      const thumbnailUrl = imageInfo?.thumburl ?? imageInfo?.url ?? null;
-
-      if (!thumbnailUrl) {
-        console.warn("Commons API did not return a thumbnail URL:", {
-          specialFilePathUrl,
-          fileName,
-          response: response.data,
-        });
-
-        return null;
-      }
-
-      const safeThumbnailUrl = this.normalizeImageUrl(thumbnailUrl);
-
-      console.log("Resolved Commons thumbnail:", {
-        fileName,
-        mime: imageInfo?.mime,
-        original: specialFilePathUrl,
-        thumbnail: safeThumbnailUrl,
-      });
-
-      return safeThumbnailUrl;
-    } catch (error) {
-      this.logError("Failed to fetch Commons thumbnail URL:", error);
-      return null;
-    }
-  }
-
-  private getCommonsFileNameFromSpecialFilePathUrl(url: string) {
-    try {
-      const parsedUrl = new URL(url);
-      const marker = "/wiki/Special:FilePath/";
-      const markerIndex = parsedUrl.pathname.indexOf(marker);
-
-      if (markerIndex === -1) {
-        return null;
-      }
-
-      const rawFileName = parsedUrl.pathname.slice(markerIndex + marker.length);
-
-      const decodedFileName = decodeURIComponent(rawFileName)
-        .replace(/^File:/i, "")
-        .replace(/_/g, " ")
-        .trim();
-
-      return decodedFileName || null;
-    } catch {
-      return null;
-    }
-  }
-
-  private isCommonsSpecialFilePathUrl(url: string) {
-    try {
-      const parsedUrl = new URL(url);
-
-      return (
-        parsedUrl.hostname === "commons.wikimedia.org" &&
-        parsedUrl.pathname.includes("/wiki/Special:FilePath/")
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  private async resolveRedirectUrl(url: string): Promise<string | null> {
-    try {
-      const response = await axios.head(url, {
-        timeout: 10_000,
-        maxRedirects: 5,
-        validateStatus: (status) => status >= 200 && status < 400,
-        headers: {
-          "User-Agent": this.userAgent,
-          Accept: "image/jpeg,image/png,image/webp,image/gif,image/*,*/*;q=0.8",
-        },
-      });
-
-      const responseUrl = (response.request as any)?.res?.responseUrl;
-
-      return responseUrl ? this.normalizeImageUrl(responseUrl) : url;
-    } catch (error) {
-      this.logError("Failed to resolve image redirect URL:", error);
-      return null;
-    }
-  }
-
-  private rememberResolvedImageUrl(
-    originalUrl: string,
-    resolvedUrl: string | null,
-  ) {
-    if (this.resolvedImageUrlCache.size >= this.maxResolvedImageUrlCacheSize) {
-      const oldestKey = this.resolvedImageUrlCache.keys().next().value;
-
-      if (oldestKey) {
-        this.resolvedImageUrlCache.delete(oldestKey);
-      }
-    }
-
-    this.resolvedImageUrlCache.set(originalUrl, resolvedUrl);
-  }
-
-  private shuffle<T>(items: readonly T[]) {
-    const shuffled = [...items];
-
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-
-    return shuffled;
-  }
-
-  private getRandomItem<T>(items: readonly T[]): T {
-    if (items.length === 0) {
-      throw new Error("Cannot select random item from empty array");
-    }
-
-    return items[Math.floor(Math.random() * items.length)];
+    });
   }
 
   private async sendFailureMessage(
@@ -1017,17 +595,6 @@ export class PictureGameCommand extends Command {
   }
 
   private logError(message: string, error: unknown) {
-    if (axios.isAxiosError(error)) {
-      console.error(message, {
-        status: error.response?.status,
-        data: error.response?.data,
-        url: error.config?.url,
-        method: error.config?.method,
-      });
-
-      return;
-    }
-
     console.error(message, error);
   }
 }
