@@ -10,7 +10,7 @@ import {
   Message,
   type TextBasedChannel,
 } from "discord.js";
-import path, { basename, extname } from "path";
+import path, { basename } from "path";
 import { existsSync } from "fs";
 import { PointsService } from "../services/points.service";
 import SheetsService, { TriviaQuestion } from "../services/sheets.service";
@@ -545,7 +545,7 @@ export class PictureGameCommand extends Command {
         continue;
       }
 
-      const fileName = this.createHiddenAttachmentFileName(candidatePath);
+      const fileName = "pilt.png";
 
       return {
         filePath: candidatePath,
@@ -584,25 +584,6 @@ export class PictureGameCommand extends Command {
     }
 
     return Array.from(new Set(candidates));
-  }
-
-  private createHiddenAttachmentFileName(filePath: string) {
-    const extension = this.getSafeImageExtension(filePath);
-    const randomPart = `${Date.now().toString(36)}-${Math.random()
-      .toString(36)
-      .slice(2, 10)}`;
-
-    return `pildimang-${randomPart}${extension}`;
-  }
-
-  private getSafeImageExtension(filePath: string) {
-    const extension = extname(filePath).toLowerCase();
-
-    if ([".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(extension)) {
-      return extension;
-    }
-
-    return ".png";
   }
 
   private async sendFailureMessage(
