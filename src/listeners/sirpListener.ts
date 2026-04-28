@@ -1,7 +1,6 @@
 import { Listener } from "@sapphire/framework";
 import { Client, EmbedBuilder, Events } from "discord.js";
 import Parser from "rss-parser";
-import * as cheerio from "cheerio";
 import fs from "node:fs/promises";
 import path from "node:path";
 import http from "node:http";
@@ -72,20 +71,30 @@ const SIRP_CATEGORIES: SirpCategory[] = [
   },
 ];
 
+// Jätan vana faili nime alles, et olemasolev "seen" ajalugu ei kaoks.
 const SEEN_FILE = path.join(process.cwd(), "data", "sirp-kunst-seen.json");
 
-const ENABLE_AUTOMATIC_CHECK = true;
-const CHECK_INTERVAL_MINUTES = 300;
-const INITIAL_CHECK_DELAY_SECONDS = 120;
-const POST_EXISTING_ON_FIRST_RUN = false;
-const MAX_POSTS_PER_CHECK = 5;
+const ENABLE_AUTOMATIC_CHECK =
+  process.env.SIRP_ENABLE_AUTOMATIC_CHECK?.toLowerCase() !== "false";
 
-const REQUEST_TIMEOUT_MS = 6_000;
-const MAX_RESPONSE_BYTES = 1_500_000;
+const CHECK_INTERVAL_MINUTES = Number(
+  process.env.SIRP_CHECK_INTERVAL_MINUTES ?? 300,
+);
+
+const INITIAL_CHECK_DELAY_SECONDS = Number(
+  process.env.SIRP_INITIAL_CHECK_DELAY_SECONDS ?? 600,
+);
+
+const POST_EXISTING_ON_FIRST_RUN = false;
+const MAX_POSTS_PER_CHECK = Number(process.env.SIRP_MAX_POSTS_PER_CHECK ?? 5);
+
+const REQUEST_TIMEOUT_MS = Number(process.env.SIRP_REQUEST_TIMEOUT_MS ?? 5_000);
+const MAX_RESPONSE_BYTES = 750_000;
 
 const USER_AGENT = "Kiisukas-v-2 Discord bot (+https://www.sirp.ee/)";
 
-let timer: NodeJS.Timeout | null = null;
+let intervalTimer: NodeJS.Timeout | null = null;
+let initialTimer: NodeJS.Timeout | null = null;
 let isChecking = false;
 
 const parser = new Parser();
@@ -100,28 +109,35 @@ export class SirpKunstListener extends Listener {
   }
 
   public run(client: Client) {
-    if (!ENABLE_AUTOMATIC_CHECK) return;
+    if (!ENABLE_AUTOMATIC_CHECK) {
+      console.log("[Sirp] Automaatne kontroll on välja lülitatud.");
+      return;
+    }
 
     startSirpNews(client);
   }
 }
 
 function startSirpNews(client: Client) {
-  if (timer) return;
+  if (initialTimer || intervalTimer) return;
 
   const intervalMs = Math.max(CHECK_INTERVAL_MINUTES, 5) * 60_000;
-  const initialDelayMs = Math.max(INITIAL_CHECK_DELAY_SECONDS, 0) * 1_000;
+  const initialDelayMs = Math.max(INITIAL_CHECK_DELAY_SECONDS, 60) * 1_000;
 
-  timer = setTimeout(() => {
+  initialTimer = setTimeout(() => {
+    initialTimer = null;
+
     void runSirpKunstCheck(client);
 
-    timer = setInterval(() => {
+    intervalTimer = setInterval(() => {
       void runSirpKunstCheck(client);
     }, intervalMs);
   }, initialDelayMs);
 
   console.log(
-    `[Sirp] Uudiste automaatne kontroll käivitatud (${CHECK_INTERVAL_MINUTES} min). Esimene kontroll ${INITIAL_CHECK_DELAY_SECONDS}s pärast.`,
+    `[Sirp] Uudiste automaatne kontroll käivitatud (${CHECK_INTERVAL_MINUTES} min). Esimene kontroll ${Math.round(
+      initialDelayMs / 1_000,
+    )}s pärast.`,
   );
 }
 
@@ -170,8 +186,9 @@ export async function runSirpKunstCheck(
 
     if (articles.length === 0) {
       return {
-        ok: false,
-        message: "Sirbi rubriikidest ei leitud ühtegi artiklit.",
+        ok: true,
+        message:
+          "Sirbi RSS feedidest ei saadud praegu artikleid kätte. Bot jätkab tööd.",
         fetched: 0,
         posted: 0,
       };
@@ -284,7 +301,7 @@ export async function runSirpKunstCheck(
     return {
       ok: false,
       message:
-        "Sirbi kontroll ebaõnnestus. Vaata täpsemat errorit terminalist.",
+        "Sirbi kontroll ebaõnnestus. Bot jätkab tööd, vaata täpsemat errorit terminalist.",
       fetched: 0,
       posted: 0,
     };
@@ -324,18 +341,28 @@ async function postArticle(
 }
 
 async function getSirpArticles(): Promise<SirpArticle[]> {
+  const results = await Promise.allSettled(
+    SIRP_CATEGORIES.map((category) => getArticlesFromRss(category)),
+  );
+
   const allArticles: SirpArticle[] = [];
 
-  for (const category of SIRP_CATEGORIES) {
-    try {
-      const articles = await getSirpCategoryArticles(category);
-      allArticles.push(...articles);
-    } catch (error) {
-      console.warn(
-        `[Sirp] Rubriigi "${category.label}" lugemine ebaõnnestus:`,
-        error,
+  for (let index = 0; index < results.length; index++) {
+    const category = SIRP_CATEGORIES[index];
+    const result = results[index];
+
+    if (result.status === "fulfilled") {
+      allArticles.push(...result.value);
+      console.log(
+        `[Sirp] ${category.label}: ${result.value.length} artiklit RSSist.`,
       );
+      continue;
     }
+
+    console.warn(
+      `[Sirp] ${category.label}: RSS lugemine ebaõnnestus:`,
+      result.reason,
+    );
   }
 
   const deduplicatedArticles = new Map<string, SirpArticle>();
@@ -353,21 +380,6 @@ async function getSirpArticles(): Promise<SirpArticle[]> {
   );
 }
 
-async function getSirpCategoryArticles(
-  category: SirpCategory,
-): Promise<SirpArticle[]> {
-  try {
-    return await getArticlesFromRss(category);
-  } catch (error) {
-    console.warn(
-      `[Sirp] RSS lugemine ebaõnnestus rubriigis "${category.label}", proovin HTML lehte:`,
-      error,
-    );
-
-    return await getArticlesFromHtml(category);
-  }
-}
-
 async function getArticlesFromRss(
   category: SirpCategory,
 ): Promise<SirpArticle[]> {
@@ -376,6 +388,7 @@ async function getArticlesFromRss(
 
   return feed.items
     .filter((item) => item.title && item.link)
+    .slice(0, 20)
     .map((item) => ({
       title: cleanText(item.title ?? ""),
       link: item.link ?? "",
@@ -389,42 +402,6 @@ async function getArticlesFromRss(
       categoryKey: category.key,
       categoryLabel: category.label,
     }));
-}
-
-async function getArticlesFromHtml(
-  category: SirpCategory,
-): Promise<SirpArticle[]> {
-  const html = await fetchText(category.pageUrl);
-  const $ = cheerio.load(html);
-
-  const articles: SirpArticle[] = [];
-  const usedLinks = new Set<string>();
-
-  $("h2 a, h3 a, article a").each((_, element) => {
-    const title = cleanText($(element).text());
-    const href = $(element).attr("href");
-
-    if (!title || !href) return;
-
-    const link = new URL(href, category.pageUrl).toString();
-    const key = articleKey(link);
-
-    if (!link.includes("sirp.ee")) return;
-    if (usedLinks.has(key)) return;
-    if (title.length < 4) return;
-
-    usedLinks.add(key);
-
-    articles.push({
-      title,
-      link,
-      description: `Uus Sirbi ${category.label} artikkel.`,
-      categoryKey: category.key,
-      categoryLabel: category.label,
-    });
-  });
-
-  return articles.slice(0, 20);
 }
 
 async function readSeen(): Promise<Set<string>> {
@@ -508,7 +485,14 @@ function articleKey(link: string) {
 }
 
 function cleanText(value: string) {
-  return cheerio.load(value).text().replace(/\s+/g, " ").trim();
+  return value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getArticleTime(article: SirpArticle) {
@@ -524,37 +508,37 @@ function fetchText(url: string, redirectsLeft = 2): Promise<string> {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "http:" ? http : https;
 
-    let request: http.ClientRequest | undefined;
     let settled = false;
+    let request: http.ClientRequest | null = null;
 
     const timeout = setTimeout(() => {
       fail(new Error(`Request timeout after ${REQUEST_TIMEOUT_MS}ms`));
     }, REQUEST_TIMEOUT_MS);
 
-    const finish = (callback: () => void) => {
+    function finish(callback: () => void) {
       if (settled) return;
 
       settled = true;
       clearTimeout(timeout);
       callback();
-    };
+    }
 
-    const fail = (error: Error) => {
+    function fail(error: Error) {
       if (request && !request.destroyed) {
-        request.destroy(error);
+        request.destroy();
       }
 
       finish(() => reject(error));
-    };
+    }
 
-    request = client.get(
+    request = client.request(
       parsedUrl,
       {
+        method: "GET",
         agent: false,
         headers: {
           "User-Agent": USER_AGENT,
-          Accept:
-            "application/rss+xml,application/xml,text/xml,text/html;q=0.9,*/*;q=0.8",
+          Accept: "application/rss+xml,application/xml,text/xml,*/*;q=0.8",
           Connection: "close",
         },
       },
@@ -592,13 +576,8 @@ function fetchText(url: string, redirectsLeft = 2): Promise<string> {
           receivedBytes += Buffer.byteLength(chunk, "utf8");
 
           if (receivedBytes > MAX_RESPONSE_BYTES) {
-            fail(
-              new Error(
-                `Response too large: ${receivedBytes} bytes from ${url}`,
-              ),
-            );
-
             response.destroy();
+            fail(new Error(`Response too large: ${receivedBytes} bytes`));
             return;
           }
 
@@ -615,8 +594,16 @@ function fetchText(url: string, redirectsLeft = 2): Promise<string> {
       },
     );
 
+    request.on("timeout", () => {
+      fail(new Error(`Request timeout after ${REQUEST_TIMEOUT_MS}ms`));
+    });
+
     request.on("error", (error) => {
+      if (settled) return;
       fail(error instanceof Error ? error : new Error(String(error)));
     });
+
+    request.setTimeout(REQUEST_TIMEOUT_MS);
+    request.end();
   });
 }
