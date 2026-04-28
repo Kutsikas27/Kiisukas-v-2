@@ -38,11 +38,9 @@ interface PaintingGameArtwork {
   sourceUrl: string;
 }
 
-interface SheetRow {
-  imagePath: string;
-  question: string;
-  correctAnswer: string;
-  wrongAnswers: string[];
+interface GoogleSheetsCredentials {
+  clientEmail: string;
+  privateKey: string;
 }
 
 class SheetsService {
@@ -52,23 +50,121 @@ class SheetsService {
   private readonly cacheTtl = 1000 * 60 * 60; // 1 hour
 
   private getAuth() {
-    const clientEmail = process.env.GOOGLE_SHEETS_CLIENT_EMAIL;
-    const privateKey = process.env.GOOGLE_SHEETS_PRIVATE_KEY?.replace(
-      /\\n/g,
-      "\n",
-    );
+    const credentials = this.getGoogleSheetsCredentials();
 
-    if (!clientEmail || !privateKey) {
+    return new google.auth.JWT({
+      email: credentials.clientEmail,
+      key: credentials.privateKey,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
+  }
+
+  private getGoogleSheetsCredentials(): GoogleSheetsCredentials {
+    const serviceAccountJson = this.getServiceAccountJsonFromEnv();
+
+    const clientEmail =
+      serviceAccountJson?.client_email ||
+      process.env.GOOGLE_SHEETS_CLIENT_EMAIL ||
+      process.env.GOOGLE_CLIENT_EMAIL;
+
+    const privateKey =
+      serviceAccountJson?.private_key ||
+      this.getPrivateKeyFromEnv();
+
+    if (!clientEmail) {
       throw new Error(
-        "Missing GOOGLE_SHEETS_CLIENT_EMAIL or GOOGLE_SHEETS_PRIVATE_KEY in .env",
+        "Missing GOOGLE_SHEETS_CLIENT_EMAIL in .env / Fly secrets",
       );
     }
 
-    return new google.auth.JWT({
-      email: clientEmail,
-      key: privateKey,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
+    if (!privateKey) {
+      throw new Error(
+        "Missing GOOGLE_SHEETS_PRIVATE_KEY in .env / Fly secrets",
+      );
+    }
+
+    const normalizedPrivateKey = this.normalizePrivateKey(privateKey);
+
+    if (
+      !normalizedPrivateKey.includes("-----BEGIN PRIVATE KEY-----") &&
+      !normalizedPrivateKey.includes("-----BEGIN RSA PRIVATE KEY-----")
+    ) {
+      throw new Error(
+        "GOOGLE_SHEETS_PRIVATE_KEY is not a valid PEM private key. Use GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_BASE64 or fix escaped newlines.",
+      );
+    }
+
+    return {
+      clientEmail,
+      privateKey: normalizedPrivateKey,
+    };
+  }
+
+  private getServiceAccountJsonFromEnv():
+    | {
+        client_email?: string;
+        private_key?: string;
+      }
+    | null {
+    const base64Json =
+      process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_BASE64 ||
+      process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64;
+
+    if (base64Json) {
+      try {
+        const decodedJson = Buffer.from(base64Json, "base64").toString("utf8");
+        return JSON.parse(decodedJson);
+      } catch (error) {
+        throw new Error(
+          `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_BASE64 is invalid: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    const rawJson =
+      process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON ||
+      process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+
+    if (rawJson) {
+      try {
+        return JSON.parse(rawJson);
+      } catch (error) {
+        throw new Error(
+          `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is invalid JSON: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    return null;
+  }
+
+  private getPrivateKeyFromEnv() {
+    const base64PrivateKey =
+      process.env.GOOGLE_SHEETS_PRIVATE_KEY_BASE64 ||
+      process.env.GOOGLE_PRIVATE_KEY_BASE64;
+
+    if (base64PrivateKey) {
+      return Buffer.from(base64PrivateKey, "base64").toString("utf8");
+    }
+
+    return (
+      process.env.GOOGLE_SHEETS_PRIVATE_KEY ||
+      process.env.GOOGLE_PRIVATE_KEY ||
+      null
+    );
+  }
+
+  private normalizePrivateKey(privateKey: string) {
+    return privateKey
+      .replace(/^["']|["']$/g, "")
+      .replace(/\\n/g, "\n")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .trim();
   }
 
   async getTriviaQuestions(): Promise<TriviaQuestion[]> {
@@ -87,7 +183,6 @@ class SheetsService {
     const auth = this.getAuth();
 
     try {
-      // First, get spreadsheet metadata to find the correct sheet name
       const spreadsheetResponse = await this.sheets.spreadsheets.get({
         auth,
         spreadsheetId: sheetsId,
@@ -106,7 +201,7 @@ class SheetsService {
       const response = await this.sheets.spreadsheets.values.get({
         auth,
         spreadsheetId: sheetsId,
-        range: `${sheetName}!A1:G`, // Columns A-G starting from row 1 (image, question, answer, wrong answers)
+        range: `${sheetName}!A1:G`,
       });
 
       const rows = response.data.values || [];
@@ -115,7 +210,6 @@ class SheetsService {
         throw new Error("Sheet has no data");
       }
 
-      // Skip header row if present
       const dataRows = rows.slice(1);
       const questions: TriviaQuestion[] = [];
 
@@ -124,22 +218,26 @@ class SheetsService {
           continue;
         }
 
-        const [imagePath, question, correctAnswer, ...wrongAnswers] = row;
+        const [imagePathRaw, questionRaw, correctAnswerRaw, ...wrongAnswersRaw] =
+          row;
+
+        const imagePath = String(imagePathRaw ?? "").trim();
+        const question = String(questionRaw ?? "").trim();
+        const correctAnswer = String(correctAnswerRaw ?? "").trim();
 
         if (!imagePath || !question || !correctAnswer) {
           continue;
         }
 
-        // Filter out empty wrong answers
-        const filteredWrongAnswers = wrongAnswers.filter(
-          (a: string) => a && a.trim(),
-        );
+        const wrongAnswers = wrongAnswersRaw
+          .map((answer) => String(answer ?? "").trim())
+          .filter((answer) => answer.length > 0);
 
         questions.push({
-          imageUrl: imagePath.trim(),
-          question: question.trim(),
-          correctAnswer: correctAnswer.trim(),
-          wrongAnswers: filteredWrongAnswers.map((a: string) => a.trim()),
+          imageUrl: imagePath,
+          question,
+          correctAnswer,
+          wrongAnswers,
         });
       }
 
@@ -288,7 +386,6 @@ class SheetsService {
     const questions: TriviaQuestion[] = [];
 
     for (const artwork of artworks) {
-      // Create "Guess the artist" question
       const artistQuestion: TriviaQuestion = {
         imageUrl: artwork.imageUrl,
         question: `Kes on selle maali "${artwork.title}" autor?`,
@@ -296,7 +393,6 @@ class SheetsService {
         wrongAnswers: this.generateWrongArtists(artwork.artist, artworks),
       };
 
-      // Create "Guess the title" question
       const titleQuestion: TriviaQuestion = {
         imageUrl: artwork.imageUrl,
         question: `Mis on selle maali nimi, mille autor on ${artwork.artist}?`,
@@ -318,7 +414,6 @@ class SheetsService {
       .filter((artwork) => artwork.artist !== correctArtist)
       .map((artwork) => artwork.artist);
 
-    // Remove duplicates and shuffle
     const uniqueArtists = [...new Set(otherArtists)];
     this.shuffleArray(uniqueArtists);
 
@@ -333,7 +428,6 @@ class SheetsService {
       .filter((artwork) => artwork.title !== correctTitle)
       .map((artwork) => artwork.title);
 
-    // Remove duplicates and shuffle
     const uniqueTitles = [...new Set(otherTitles)];
     this.shuffleArray(uniqueTitles);
 
@@ -351,13 +445,13 @@ class SheetsService {
     questions: TriviaQuestion[],
   ): Promise<void> {
     const sheetsId = process.env.TRIVIA_SHEETS_ID;
+
     if (!sheetsId) {
       throw new Error("Missing TRIVIA_SHEETS_ID in .env");
     }
 
     const auth = this.getAuth();
 
-    // Get spreadsheet metadata to find the correct sheet name
     const spreadsheetResponse = await this.sheets.spreadsheets.get({
       auth,
       spreadsheetId: sheetsId,
@@ -372,7 +466,6 @@ class SheetsService {
 
     const sheetName = firstSheet.properties.title;
 
-    // Prepare data for the sheet
     const headerRow = [
       "Pilt",
       "Küsimus",
@@ -381,16 +474,16 @@ class SheetsService {
       "Vale vastus 2",
       "Vale vastus 3",
     ];
-    const dataRows = questions.map((q) => [
-      q.imageUrl,
-      q.question,
-      q.correctAnswer,
-      ...q.wrongAnswers.slice(0, 3), // Ensure max 3 wrong answers
+
+    const dataRows = questions.map((question) => [
+      question.imageUrl,
+      question.question,
+      question.correctAnswer,
+      ...question.wrongAnswers.slice(0, 3),
     ]);
 
     const values = [headerRow, ...dataRows];
 
-    // Clear existing data and write new data
     await this.sheets.spreadsheets.values.clear({
       auth,
       spreadsheetId: sheetsId,
