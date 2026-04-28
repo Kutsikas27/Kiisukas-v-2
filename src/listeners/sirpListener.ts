@@ -76,19 +76,19 @@ const SEEN_FILE = path.join(process.cwd(), "data", "sirp-kunst-seen.json");
 
 const ENABLE_AUTOMATIC_CHECK = true;
 const CHECK_INTERVAL_MINUTES = 300;
+const INITIAL_CHECK_DELAY_SECONDS = 120;
 const POST_EXISTING_ON_FIRST_RUN = false;
 const MAX_POSTS_PER_CHECK = 5;
+
+const REQUEST_TIMEOUT_MS = 6_000;
+const MAX_RESPONSE_BYTES = 1_500_000;
 
 const USER_AGENT = "Kiisukas-v-2 Discord bot (+https://www.sirp.ee/)";
 
 let timer: NodeJS.Timeout | null = null;
 let isChecking = false;
 
-const parser = new Parser({
-  headers: {
-    "User-Agent": USER_AGENT,
-  },
-});
+const parser = new Parser();
 
 export class SirpKunstListener extends Listener {
   public constructor(context: Listener.Context, options: Listener.Options) {
@@ -110,15 +110,18 @@ function startSirpNews(client: Client) {
   if (timer) return;
 
   const intervalMs = Math.max(CHECK_INTERVAL_MINUTES, 5) * 60_000;
+  const initialDelayMs = Math.max(INITIAL_CHECK_DELAY_SECONDS, 0) * 1_000;
 
-  void runSirpKunstCheck(client);
-
-  timer = setInterval(() => {
+  timer = setTimeout(() => {
     void runSirpKunstCheck(client);
-  }, intervalMs);
+
+    timer = setInterval(() => {
+      void runSirpKunstCheck(client);
+    }, intervalMs);
+  }, initialDelayMs);
 
   console.log(
-    `[Sirp] Uudiste automaatne kontroll käivitatud (${CHECK_INTERVAL_MINUTES} min).`,
+    `[Sirp] Uudiste automaatne kontroll käivitatud (${CHECK_INTERVAL_MINUTES} min). Esimene kontroll ${INITIAL_CHECK_DELAY_SECONDS}s pärast.`,
   );
 }
 
@@ -138,12 +141,14 @@ export async function runSirpKunstCheck(
   isChecking = true;
 
   try {
-    const channelId = process.env.SIRP_KUNST_CHANNEL_ID;
+    const channelId =
+      process.env.SIRP_NEWS_CHANNEL_ID ?? process.env.SIRP_KUNST_CHANNEL_ID;
 
     if (!channelId) {
       return {
         ok: false,
-        message: "SIRP_KUNST_CHANNEL_ID puudub .env failist.",
+        message:
+          "SIRP_NEWS_CHANNEL_ID või SIRP_KUNST_CHANNEL_ID puudub .env failist.",
         fetched: 0,
         posted: 0,
       };
@@ -366,7 +371,8 @@ async function getSirpCategoryArticles(
 async function getArticlesFromRss(
   category: SirpCategory,
 ): Promise<SirpArticle[]> {
-  const feed = await parser.parseURL(category.feedUrl);
+  const xml = await fetchText(category.feedUrl);
+  const feed = await parser.parseString(xml);
 
   return feed.items
     .filter((item) => item.title && item.link)
@@ -513,18 +519,43 @@ function getArticleTime(article: SirpArticle) {
   return Number.isNaN(time) ? 0 : time;
 }
 
-function fetchText(url: string, redirectsLeft = 3): Promise<string> {
+function fetchText(url: string, redirectsLeft = 2): Promise<string> {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "http:" ? http : https;
 
-    const request = client.get(
+    let request: http.ClientRequest | undefined;
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      fail(new Error(`Request timeout after ${REQUEST_TIMEOUT_MS}ms`));
+    }, REQUEST_TIMEOUT_MS);
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+
+    const fail = (error: Error) => {
+      if (request && !request.destroyed) {
+        request.destroy(error);
+      }
+
+      finish(() => reject(error));
+    };
+
+    request = client.get(
       parsedUrl,
       {
+        agent: false,
         headers: {
           "User-Agent": USER_AGENT,
           Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "application/rss+xml,application/xml,text/xml,text/html;q=0.9,*/*;q=0.8",
+          Connection: "close",
         },
       },
       (response) => {
@@ -538,34 +569,54 @@ function fetchText(url: string, redirectsLeft = 3): Promise<string> {
           response.resume();
 
           const nextUrl = new URL(response.headers.location, url).toString();
-          resolve(fetchText(nextUrl, redirectsLeft - 1));
+
+          finish(() => {
+            resolve(fetchText(nextUrl, redirectsLeft - 1));
+          });
+
           return;
         }
 
         if (statusCode >= 400) {
           response.resume();
-          reject(new Error(`HTTP ${statusCode}`));
+          fail(new Error(`HTTP ${statusCode}`));
           return;
         }
 
         response.setEncoding("utf8");
 
         let body = "";
+        let receivedBytes = 0;
 
-        response.on("data", (chunk) => {
+        response.on("data", (chunk: string) => {
+          receivedBytes += Buffer.byteLength(chunk, "utf8");
+
+          if (receivedBytes > MAX_RESPONSE_BYTES) {
+            fail(
+              new Error(
+                `Response too large: ${receivedBytes} bytes from ${url}`,
+              ),
+            );
+
+            response.destroy();
+            return;
+          }
+
           body += chunk;
         });
 
         response.on("end", () => {
-          resolve(body);
+          finish(() => resolve(body));
+        });
+
+        response.on("error", (error) => {
+          fail(error instanceof Error ? error : new Error(String(error)));
         });
       },
     );
 
-    request.setTimeout(15_000, () => {
-      request.destroy(new Error("Request timeout"));
+    request.on("error", (error) => {
+      fail(error instanceof Error ? error : new Error(String(error)));
     });
-
-    request.on("error", reject);
   });
 }

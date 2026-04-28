@@ -2,6 +2,7 @@ import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
@@ -30,6 +31,12 @@ interface MultipleChoiceQuestion {
 interface ParsedCustomId {
   sessionId: string;
   optionIndex: number;
+}
+
+interface LocalImageAttachment {
+  filePath: string;
+  fileName: string;
+  embedUrl: string;
 }
 
 @ApplyOptions<Command.Options>({
@@ -152,10 +159,10 @@ export class PictureGameCommand extends Command {
     const row = this.buildButtonRow(question, sessionId);
 
     const message = await this.sendMessageWithImage(interaction, {
-      embeds: [this.buildQuestionEmbed(triviaQuestion, question)],
+      triviaQuestion,
+      question,
       components: [row],
       isInitial: true,
-      imagePath: triviaQuestion.imageUrl,
     });
 
     const correctUserIds = await this.collectAnswers({
@@ -173,7 +180,7 @@ export class PictureGameCommand extends Command {
         new EmbedBuilder()
           .setTitle("Õige vastus!")
           .setDescription(
-            `Õige vastus: **${triviaQuestion.correctAnswer}**\n\nÕigeid vastajad: **${correctUserIds.size}**`,
+            `Õige vastus: **${triviaQuestion.correctAnswer}**\n\nÕigeid vastajaid: **${correctUserIds.size}**`,
           )
           .setColor("Gold"),
       ],
@@ -200,17 +207,33 @@ export class PictureGameCommand extends Command {
   private async sendMessageWithImage(
     interaction: Command.ChatInputCommandInteraction,
     options: {
-      embeds: EmbedBuilder[];
+      triviaQuestion: TriviaQuestion;
+      question: MultipleChoiceQuestion;
       components: ActionRowBuilder<ButtonBuilder>[];
       isInitial: boolean;
-      imagePath: string;
     },
   ) {
-    const files = this.getImageFiles(options.imagePath);
+    const imageAttachment = this.resolveLocalImageAttachment(
+      options.triviaQuestion.imageUrl,
+    );
+
+    const embed = this.buildQuestionEmbed(
+      options.triviaQuestion,
+      options.question,
+      imageAttachment?.embedUrl ?? null,
+    );
+
+    const files = imageAttachment
+      ? [
+          new AttachmentBuilder(imageAttachment.filePath, {
+            name: imageAttachment.fileName,
+          }),
+        ]
+      : [];
 
     if (options.isInitial) {
       await interaction.editReply({
-        embeds: options.embeds,
+        embeds: [embed],
         components: options.components,
         files,
       });
@@ -218,7 +241,7 @@ export class PictureGameCommand extends Command {
       return (await interaction.fetchReply()) as Message;
     }
 
-    return null as any;
+    throw new Error("Non-initial picture game messages are not implemented.");
   }
 
   private async collectAnswers(options: {
@@ -336,6 +359,7 @@ export class PictureGameCommand extends Command {
   private buildQuestionEmbed(
     triviaQuestion: TriviaQuestion,
     question: MultipleChoiceQuestion,
+    imageSource: string | null,
   ) {
     const embed = new EmbedBuilder()
       .setTitle(question.title)
@@ -350,9 +374,13 @@ export class PictureGameCommand extends Command {
       )
       .setColor("Blue");
 
-    const imageSource = this.getEmbedImageSource(triviaQuestion.imageUrl);
     if (imageSource) {
       embed.setImage(imageSource);
+    } else {
+      this.logError(
+        `Pildi embed source puudub. Sheets imageUrl: ${triviaQuestion.imageUrl}`,
+        null,
+      );
     }
 
     return embed;
@@ -516,66 +544,61 @@ export class PictureGameCommand extends Command {
       .trim();
   }
 
-  private getEmbedImageSource(imagePath: string): string | null {
+  private resolveLocalImageAttachment(
+    rawImagePath: string,
+  ): LocalImageAttachment | null {
+    const imagePath = rawImagePath.replace(/\s+/g, " ").trim();
+
+    if (!imagePath) {
+      this.logError("Image path is empty.", null);
+      return null;
+    }
+
     if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
-      return imagePath;
+      return null;
     }
 
-    // Try to find local file
-    const resolvedPath = path.resolve(imagePath);
+    const candidates = this.getLocalImagePathCandidates(imagePath);
 
-    if (existsSync(resolvedPath)) {
-      const fileName = basename(imagePath);
-      return `attachment://${fileName}`;
+    for (const candidatePath of candidates) {
+      if (!existsSync(candidatePath)) {
+        continue;
+      }
+
+      const fileName = basename(candidatePath);
+
+      return {
+        filePath: candidatePath,
+        fileName,
+        embedUrl: `attachment://${fileName}`,
+      };
     }
 
-    // Try without resolve (in case it's relative to pictures/)
-    const picturesPath = path.join(
-      process.cwd(),
-      "pictures",
-      basename(imagePath),
+    this.logError(
+      [
+        `Image file not found: ${rawImagePath}`,
+        `process.cwd(): ${process.cwd()}`,
+        `Checked paths:`,
+        ...candidates.map((candidatePath) => `- ${candidatePath}`),
+      ].join("\n"),
+      null,
     );
-    if (existsSync(picturesPath)) {
-      const fileName = basename(imagePath);
-      return `attachment://${fileName}`;
-    }
 
-    // If file doesn't exist, return null to skip image
     return null;
   }
 
-  private getImageFiles(imagePath: string) {
-    // Only process local files (not URLs)
-    if (imagePath.startsWith("http")) {
-      return [];
-    }
+  private getLocalImagePathCandidates(imagePath: string) {
+    const fileName = basename(imagePath);
 
-    // Try exact path first
-    let resolvedPath = path.resolve(imagePath);
-    if (existsSync(resolvedPath)) {
-      return [resolvedPath];
-    }
-
-    // Try pictures/ folder
-    resolvedPath = path.join(process.cwd(), "pictures", basename(imagePath));
-    if (existsSync(resolvedPath)) {
-      return [resolvedPath];
-    }
-
-    // If nothing found, log it for debugging
-    this.logError(`Image file not found: ${imagePath}`, null);
-    return [];
-  }
-
-  private async delay(ms: number, abortSignal: AbortSignal): Promise<void> {
-    return new Promise((resolve) => {
-      const timeout = setTimeout(resolve, ms);
-
-      abortSignal.addEventListener("abort", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
+    return Array.from(
+      new Set([
+        path.resolve(imagePath),
+        path.join(process.cwd(), imagePath),
+        path.join(process.cwd(), "pictures", fileName),
+        path.join(process.cwd(), "dist", "pictures", fileName),
+        path.join(process.cwd(), "..", "pictures", fileName),
+      ]),
+    );
   }
 
   private async sendFailureMessage(
