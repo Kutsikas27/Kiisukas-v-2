@@ -68,8 +68,7 @@ class SheetsService {
       process.env.GOOGLE_CLIENT_EMAIL;
 
     const privateKey =
-      serviceAccountJson?.private_key ||
-      this.getPrivateKeyFromEnv();
+      serviceAccountJson?.private_key || this.getPrivateKeyFromEnv();
 
     if (!clientEmail) {
       throw new Error(
@@ -100,12 +99,10 @@ class SheetsService {
     };
   }
 
-  private getServiceAccountJsonFromEnv():
-    | {
-        client_email?: string;
-        private_key?: string;
-      }
-    | null {
+  private getServiceAccountJsonFromEnv(): {
+    client_email?: string;
+    private_key?: string;
+  } | null {
     const base64Json =
       process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_BASE64 ||
       process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64;
@@ -218,14 +215,18 @@ class SheetsService {
           continue;
         }
 
-        const [imagePathRaw, questionRaw, correctAnswerRaw, ...wrongAnswersRaw] =
-          row;
+        const [
+          imagePathRaw,
+          questionRaw,
+          correctAnswerRaw,
+          ...wrongAnswersRaw
+        ] = row;
 
         const imagePath = String(imagePathRaw ?? "").trim();
         const question = String(questionRaw ?? "").trim();
         const correctAnswer = String(correctAnswerRaw ?? "").trim();
 
-        if (!imagePath || !question || !correctAnswer) {
+        if (!question || !correctAnswer) {
           continue;
         }
 
