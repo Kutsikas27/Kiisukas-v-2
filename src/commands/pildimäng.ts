@@ -186,14 +186,16 @@ export class PictureGameCommand extends Command {
       });
 
       await this.disableMessageButtons(message, row);
-      await this.sendAnswerReveal(channel, triviaQuestion, correctUserIds.size);
+      await this.sendRoundFinishedMessage(channel, correctUserIds.size);
       await this.delay(3000, abortSignal);
 
       questionIndex = (questionIndex + 1) % allQuestions.length;
     }
   }
 
-  private createQuestion(triviaQuestion: TriviaQuestion): MultipleChoiceQuestion {
+  private createQuestion(
+    triviaQuestion: TriviaQuestion,
+  ): MultipleChoiceQuestion {
     return {
       title: "Trivia - vasta küsimusele",
       description: triviaQuestion.question,
@@ -394,18 +396,15 @@ export class PictureGameCommand extends Command {
     });
   }
 
-  private async sendAnswerReveal(
+  private async sendRoundFinishedMessage(
     channel: TextBasedChannel,
-    triviaQuestion: TriviaQuestion,
     correctAnswerCount: number,
   ) {
     await channel.send({
       embeds: [
         new EmbedBuilder()
-          .setTitle("Õige vastus!")
-          .setDescription(
-            `Õige vastus: **${triviaQuestion.correctAnswer}**\n\nArvas õigesti: **${correctAnswerCount}**`,
-          )
+          .setTitle("Mäng läbi!")
+          .setDescription(`Õigeid vastuseid: **${correctAnswerCount}**`)
           .setColor("Gold"),
       ],
     });
