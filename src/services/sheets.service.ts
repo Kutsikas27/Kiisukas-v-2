@@ -198,7 +198,7 @@ class SheetsService {
       const response = await this.sheets.spreadsheets.values.get({
         auth,
         spreadsheetId: sheetsId,
-        range: `${sheetName}!A1:G`,
+        range: `${sheetName}!A1:Z`,
       });
 
       const rows = response.data.values || [];
@@ -211,10 +211,6 @@ class SheetsService {
       const questions: TriviaQuestion[] = [];
 
       for (const row of dataRows) {
-        if (row.length < 3) {
-          continue;
-        }
-
         const [
           imagePathRaw,
           questionRaw,
@@ -436,9 +432,9 @@ class SheetsService {
   }
 
   private shuffleArray<T>(array: T[]): void {
-    for (let i = array.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [array[i], array[j]] = [array[j], array[i]];
+    for (let index = array.length - 1; index > 0; index--) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      [array[index], array[randomIndex]] = [array[randomIndex], array[index]];
     }
   }
 

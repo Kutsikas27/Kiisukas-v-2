@@ -8,6 +8,7 @@ import {
   ComponentType,
   EmbedBuilder,
   Message,
+  type ButtonInteraction,
   type TextBasedChannel,
 } from "discord.js";
 import path, { basename } from "path";
@@ -39,6 +40,15 @@ interface LocalImageAttachment {
   embedUrl: string;
 }
 
+interface QuestionMessageOptions {
+  interaction: Command.ChatInputCommandInteraction;
+  channel: TextBasedChannel;
+  triviaQuestion: TriviaQuestion;
+  question: MultipleChoiceQuestion;
+  components: ActionRowBuilder<ButtonBuilder>[];
+  isInitial: boolean;
+}
+
 @ApplyOptions<Command.Options>({
   name: "pildimäng",
   description: "Alusta trivia mängu piltidega",
@@ -54,40 +64,24 @@ export class PictureGameCommand extends Command {
   }
 
   public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
-    await interaction.deferReply();
+    const validationError = this.validateInteraction(interaction);
 
-    const guild = interaction.guild;
-    const channel = interaction.channel;
+    if (validationError) {
+      return interaction.reply({
+        content: validationError,
+        ephemeral: true,
+      });
+    }
+
+    const guild = interaction.guild!;
+    const channel = interaction.channel as TextBasedChannel;
     const channelId = interaction.channelId;
 
-    if (!guild) {
-      await interaction.editReply({
-        content: "Seda käsku saab kasutada ainult serveris.",
-      });
-      return;
-    }
-
-    if (!channel?.isTextBased()) {
-      await interaction.editReply({
-        content: "Selles kanalis ei saa pildimängu käivitada.",
-      });
-      return;
-    }
-
-    const allowedChannelId = process.env.PICTURE_GAME_CHANNEL_ID;
-
-    if (allowedChannelId && channelId !== allowedChannelId) {
-      await interaction.editReply({
-        content: "Kasuta seda käsku kanalis #pildimäng.",
-      });
-      return;
-    }
-
     if (this.activeGameChannelIds.has(channelId)) {
-      await interaction.editReply({
+      return interaction.reply({
         content: "Pildimäng juba käib.",
+        ephemeral: true,
       });
-      return;
     }
 
     this.activeGameChannelIds.add(channelId);
@@ -95,13 +89,19 @@ export class PictureGameCommand extends Command {
     const abortController = new AbortController();
     this.gameLoopControllers.set(channelId, abortController);
 
+    let deferred = false;
+
     try {
+      await interaction.deferReply();
+      deferred = true;
+
       const allQuestions = await SheetsService.getTriviaQuestions();
 
       if (allQuestions.length === 0) {
-        await interaction.editReply({
-          content: "Küsimusi ei leitud.",
-        });
+        await this.sendEphemeralAfterPublicDefer(
+          interaction,
+          "Küsimusi ei leitud.",
+        );
         return;
       }
 
@@ -115,11 +115,36 @@ export class PictureGameCommand extends Command {
     } catch (error) {
       this.logError("Picture game failed:", error);
 
-      await this.sendFailureMessage(interaction);
+      if (deferred) {
+        await this.sendEphemeralAfterPublicDefer(
+          interaction,
+          "Pildimängu ei õnnestunud käivitada. Proovi natuke hiljem uuesti.",
+        );
+      }
     } finally {
       this.activeGameChannelIds.delete(channelId);
       this.gameLoopControllers.delete(channelId);
     }
+  }
+
+  private validateInteraction(
+    interaction: Command.ChatInputCommandInteraction,
+  ): string | null {
+    if (!interaction.guild) {
+      return "Seda käsku saab kasutada ainult serveris.";
+    }
+
+    if (!interaction.channel?.isTextBased()) {
+      return "Selles kanalis ei saa pildimängu käivitada.";
+    }
+
+    const allowedChannelId = process.env.PICTURE_GAME_CHANNEL_ID;
+
+    if (allowedChannelId && interaction.channelId !== allowedChannelId) {
+      return "Kasuta seda käsku kanalis #pildimäng.";
+    }
+
+    return null;
   }
 
   private async gameLoop(options: {
@@ -132,79 +157,86 @@ export class PictureGameCommand extends Command {
     const { interaction, channel, guildId, allQuestions, abortSignal } =
       options;
 
-    if (abortSignal.aborted || allQuestions.length === 0) {
-      return;
+    let questionIndex = 0;
+    let isInitialMessage = true;
+
+    while (!abortSignal.aborted) {
+      const triviaQuestion = allQuestions[questionIndex];
+      const question = this.createQuestion(triviaQuestion);
+      const sessionId = this.createSessionId();
+      const row = this.buildButtonRow(question, sessionId);
+
+      const message = await this.sendQuestionMessage({
+        interaction,
+        channel,
+        triviaQuestion,
+        question,
+        components: [row],
+        isInitial: isInitialMessage,
+      });
+
+      isInitialMessage = false;
+
+      const correctUserIds = await this.collectAnswers({
+        message,
+        guildId,
+        sessionId,
+        question,
+        abortSignal,
+      });
+
+      await this.disableMessageButtons(message, row);
+      await this.sendAnswerReveal(channel, triviaQuestion, correctUserIds.size);
+      await this.delay(3000, abortSignal);
+
+      questionIndex = (questionIndex + 1) % allQuestions.length;
     }
-
-    const questionIndex = Math.floor(Math.random() * allQuestions.length);
-    const triviaQuestion = allQuestions[questionIndex];
-
-    const question = this.createQuestion({
-      title: "Trivia - Vasta küsimusele.",
-      description: triviaQuestion.question,
-      correctAnswer: triviaQuestion.correctAnswer,
-      allAnswers: [
-        triviaQuestion.correctAnswer,
-        ...triviaQuestion.wrongAnswers,
-      ],
-    });
-
-    const sessionId = this.createSessionId();
-    const row = this.buildButtonRow(question, sessionId);
-
-    const message = await this.sendMessageWithOptionalImage(interaction, {
-      triviaQuestion,
-      question,
-      components: [row],
-    });
-
-    const correctUserIds = await this.collectAnswers({
-      message,
-      guildId,
-      sessionId,
-      question,
-      abortSignal,
-    });
-
-    await this.disableMessageButtons(message, row);
-
-    await message.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("Vastus")
-          .setDescription(
-            `Õigeid vastuseid: **${triviaQuestion.correctAnswer}**\n\nÕigeid vastajaid: **${correctUserIds.size}**`,
-          )
-          .setColor("#3397CC"),
-      ],
-    });
   }
 
-  private createQuestion(options: {
-    title: string;
-    description: string;
-    correctAnswer: string;
-    allAnswers: string[];
-  }): MultipleChoiceQuestion {
-    const { title, description, correctAnswer, allAnswers } = options;
-
+  private createQuestion(triviaQuestion: TriviaQuestion): MultipleChoiceQuestion {
     return {
-      title,
-      description,
-      correctAnswer,
-      options: this.generateMultipleChoice(correctAnswer, allAnswers, 4),
+      title: "Trivia - vasta küsimusele",
+      description: triviaQuestion.question,
+      correctAnswer: triviaQuestion.correctAnswer,
+      options: this.generateMultipleChoice({
+        correctAnswer: triviaQuestion.correctAnswer,
+        wrongAnswers: triviaQuestion.wrongAnswers,
+        count: 4,
+      }),
       points: 0.5,
     };
   }
 
-  private async sendMessageWithOptionalImage(
-    interaction: Command.ChatInputCommandInteraction,
-    options: {
-      triviaQuestion: TriviaQuestion;
-      question: MultipleChoiceQuestion;
-      components: ActionRowBuilder<ButtonBuilder>[];
-    },
-  ) {
+  private generateMultipleChoice(options: {
+    correctAnswer: string;
+    wrongAnswers: string[];
+    count: number;
+  }): MultipleChoiceOption[] {
+    const { correctAnswer, wrongAnswers, count } = options;
+    const wrongAnswerCount = Math.max(count - 1, 0);
+    const normalizedCorrectAnswer = this.normalizeAnswer(correctAnswer);
+
+    const selectedWrongAnswers = this.shuffleArray(
+      this.uniqueByNormalizedAnswer(wrongAnswers).filter(
+        (answer) => this.normalizeAnswer(answer) !== normalizedCorrectAnswer,
+      ),
+    ).slice(0, wrongAnswerCount);
+
+    return this.shuffleArray([
+      {
+        label: correctAnswer,
+        isCorrect: true,
+      },
+      ...selectedWrongAnswers.map((answer) => ({
+        label: answer,
+        isCorrect: false,
+      })),
+    ]);
+  }
+
+  private async sendQuestionMessage(
+    options: QuestionMessageOptions,
+  ): Promise<Message> {
     const imageAttachment = this.resolveLocalImageAttachment(
       options.triviaQuestion.imageUrl,
     );
@@ -222,13 +254,18 @@ export class PictureGameCommand extends Command {
         ]
       : [];
 
-    await interaction.editReply({
+    const payload = {
       embeds: [embed],
       components: options.components,
       files,
-    });
+    };
 
-    return (await interaction.fetchReply()) as Message;
+    if (options.isInitial) {
+      await options.interaction.editReply(payload);
+      return (await options.interaction.fetchReply()) as Message;
+    }
+
+    return await options.channel.send(payload);
   }
 
   private async collectAnswers(options: {
@@ -247,8 +284,7 @@ export class PictureGameCommand extends Command {
     const startedAt = Date.now();
 
     while (!abortSignal.aborted) {
-      const elapsed = Date.now() - startedAt;
-      const timeLeft = Math.max(timeLimitMs - elapsed, 0);
+      const timeLeft = Math.max(timeLimitMs - (Date.now() - startedAt), 0);
 
       if (timeLeft <= 0) {
         break;
@@ -272,9 +308,9 @@ export class PictureGameCommand extends Command {
           continue;
         }
 
-        const currentUserId = buttonInteraction.user.id;
+        const userId = buttonInteraction.user.id;
 
-        if (answeredUserIds.has(currentUserId)) {
+        if (answeredUserIds.has(userId)) {
           await buttonInteraction.reply({
             content: "Sa oled juba sellele küsimusele vastanud!",
             ephemeral: true,
@@ -292,48 +328,18 @@ export class PictureGameCommand extends Command {
           continue;
         }
 
-        answeredUserIds.add(currentUserId);
+        answeredUserIds.add(userId);
 
         if (selectedOption.isCorrect) {
-          correctUserIds.add(currentUserId);
-
-          const points = this.addAndGetPoints(
-            guildId,
-            currentUserId,
-            question.points,
-          );
-
-          await buttonInteraction.reply({
-            embeds: [
-              new EmbedBuilder()
-                .setTitle("✓ Õige vastus!")
-                .setDescription(
-                  [
-                    `+${this.formatPoints(question.points)} punkti`,
-                    `Sul on nüüd **${this.formatPoints(points)}** punkti.`,
-                  ].join("\n"),
-                )
-                .setColor("Green"),
-            ],
-            ephemeral: true,
-          });
-
-          continue;
+          correctUserIds.add(userId);
         }
 
-        const points = this.addAndGetPoints(
+        await this.replyToAnswer({
+          buttonInteraction,
           guildId,
-          currentUserId,
-          -question.points,
-        );
-
-        await buttonInteraction.reply({
-          content: [
-            "Vale vastus!",
-            `-${this.formatPoints(question.points)} punkti`,
-            `Sul on nüüd **${this.formatPoints(points)}** punkti.`,
-          ].join("\n"),
-          ephemeral: true,
+          userId,
+          question,
+          isCorrect: selectedOption.isCorrect,
         });
       } catch {
         break;
@@ -341,6 +347,68 @@ export class PictureGameCommand extends Command {
     }
 
     return correctUserIds;
+  }
+
+  private async replyToAnswer(options: {
+    buttonInteraction: ButtonInteraction;
+    guildId: string;
+    userId: string;
+    question: MultipleChoiceQuestion;
+    isCorrect: boolean;
+  }) {
+    const pointChange = options.isCorrect
+      ? options.question.points
+      : -options.question.points;
+
+    const totalPoints = this.addAndGetPoints(
+      options.guildId,
+      options.userId,
+      pointChange,
+    );
+
+    if (options.isCorrect) {
+      await options.buttonInteraction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("✓ Õige vastus!")
+            .setDescription(
+              [
+                `+${this.formatPoints(options.question.points)} punkti`,
+                `Sul on nüüd **${this.formatPoints(totalPoints)}** punkti.`,
+              ].join("\n"),
+            )
+            .setColor("Green"),
+        ],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await options.buttonInteraction.reply({
+      content: [
+        "Vale vastus!",
+        `-${this.formatPoints(options.question.points)} punkti`,
+        `Sul on nüüd **${this.formatPoints(totalPoints)}** punkti.`,
+      ].join("\n"),
+      ephemeral: true,
+    });
+  }
+
+  private async sendAnswerReveal(
+    channel: TextBasedChannel,
+    triviaQuestion: TriviaQuestion,
+    correctAnswerCount: number,
+  ) {
+    await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("Õige vastus!")
+          .setDescription(
+            `Õige vastus: **${triviaQuestion.correctAnswer}**\n\nArvas õigesti: **${correctAnswerCount}**`,
+          )
+          .setColor("Gold"),
+      ],
+    });
   }
 
   private buildQuestionEmbed(
@@ -367,73 +435,16 @@ export class PictureGameCommand extends Command {
     return embed;
   }
 
-  private generateMultipleChoice(
-    correctAnswer: string,
-    allOptions: string[],
-    count: number,
-  ): MultipleChoiceOption[] {
-    const normalizedCorrectAnswer = this.normalizeAnswer(correctAnswer);
-
-    const wrongOptions = this.uniqueByNormalizedAnswer(allOptions)
-      .filter((option) => {
-        const normalizedOption = this.normalizeAnswer(option);
-
-        return (
-          normalizedOption.length > 0 &&
-          normalizedOption !== normalizedCorrectAnswer
-        );
-      })
-      .sort(() => Math.random() - 0.5)
-      .slice(0, Math.max(count - 1, 0));
-
-    const choices: MultipleChoiceOption[] = [
-      {
-        label: correctAnswer,
-        isCorrect: true,
-      },
-      ...wrongOptions.map((option) => ({
-        label: option,
-        isCorrect: false,
-      })),
-    ];
-
-    return choices.sort(() => Math.random() - 0.5).slice(0, count);
-  }
-
-  private uniqueByNormalizedAnswer(values: string[]) {
-    const uniqueValues = new Map<string, string>();
-
-    for (const value of values) {
-      const trimmedValue = value.trim();
-
-      if (!trimmedValue) {
-        continue;
-      }
-
-      const normalizedValue = this.normalizeAnswer(trimmedValue);
-
-      if (!normalizedValue || uniqueValues.has(normalizedValue)) {
-        continue;
-      }
-
-      uniqueValues.set(normalizedValue, trimmedValue);
-    }
-
-    return [...uniqueValues.values()];
-  }
-
   private buildButtonRow(
     question: MultipleChoiceQuestion,
     sessionId: string,
   ): ActionRowBuilder<ButtonBuilder> {
-    const buttons = question.options
-      .slice(0, 4)
-      .map((option, index) =>
-        new ButtonBuilder()
-          .setCustomId(this.buildQuestionCustomId(sessionId, index))
-          .setLabel(this.formatButtonLabel(option.label))
-          .setStyle(ButtonStyle.Primary),
-      );
+    const buttons = question.options.map((option, index) =>
+      new ButtonBuilder()
+        .setCustomId(this.buildQuestionCustomId(sessionId, index))
+        .setLabel(this.formatButtonLabel(option.label))
+        .setStyle(ButtonStyle.Primary),
+    );
 
     return new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
   }
@@ -443,13 +454,7 @@ export class PictureGameCommand extends Command {
   }
 
   private parseQuestionCustomId(customId: string): ParsedCustomId | null {
-    const parts = customId.split(":");
-
-    if (parts.length !== 3) {
-      return null;
-    }
-
-    const [prefix, sessionId, optionIndexRaw] = parts;
+    const [prefix, sessionId, optionIndexRaw] = customId.split(":");
 
     if (prefix !== "pg" && prefix !== "trivia") {
       return null;
@@ -457,7 +462,7 @@ export class PictureGameCommand extends Command {
 
     const optionIndex = Number(optionIndexRaw);
 
-    if (!Number.isInteger(optionIndex) || optionIndex < 0) {
+    if (!sessionId || !Number.isInteger(optionIndex) || optionIndex < 0) {
       return null;
     }
 
@@ -484,6 +489,97 @@ export class PictureGameCommand extends Command {
     } catch (error) {
       this.logError("Failed to disable picture game buttons:", error);
     }
+  }
+
+  private resolveLocalImageAttachment(
+    rawImagePath: string | null | undefined,
+  ): LocalImageAttachment | null {
+    const imagePath = String(rawImagePath ?? "").trim();
+
+    if (!imagePath || this.isRemoteUrl(imagePath)) {
+      return null;
+    }
+
+    const imageFilePath = this.findLocalImageFile(imagePath);
+
+    if (!imageFilePath) {
+      this.logError(`Image file not found: ${imagePath}`, null);
+      return null;
+    }
+
+    const fileName = "pilt.png";
+
+    return {
+      filePath: imageFilePath,
+      fileName,
+      embedUrl: `attachment://${fileName}`,
+    };
+  }
+
+  private findLocalImageFile(imagePath: string): string | null {
+    for (const candidatePath of this.getLocalImagePathCandidates(imagePath)) {
+      if (existsSync(candidatePath)) {
+        return candidatePath;
+      }
+    }
+
+    return null;
+  }
+
+  private getLocalImagePathCandidates(imagePath: string) {
+    const fileName = basename(imagePath);
+    const fileNameWithoutExtension = fileName.replace(/\.[^.]+$/, "");
+
+    const possibleFileNames = [
+      fileName,
+      `${fileNameWithoutExtension}.png`,
+      `${fileNameWithoutExtension}.jpg`,
+      `${fileNameWithoutExtension}.jpeg`,
+      `${fileNameWithoutExtension}.webp`,
+    ];
+
+    return Array.from(
+      new Set([
+        path.resolve(imagePath),
+        path.join(process.cwd(), imagePath),
+        ...possibleFileNames.flatMap((possibleFileName) => [
+          path.join(process.cwd(), "pictures", possibleFileName),
+          path.join(process.cwd(), "dist", "pictures", possibleFileName),
+          path.join(process.cwd(), "..", "pictures", possibleFileName),
+        ]),
+      ]),
+    );
+  }
+
+  private uniqueByNormalizedAnswer(values: string[]) {
+    const uniqueValues = new Map<string, string>();
+
+    for (const value of values) {
+      const trimmedValue = String(value ?? "").trim();
+      const normalizedValue = this.normalizeAnswer(trimmedValue);
+
+      if (!normalizedValue || uniqueValues.has(normalizedValue)) {
+        continue;
+      }
+
+      uniqueValues.set(normalizedValue, trimmedValue);
+    }
+
+    return [...uniqueValues.values()];
+  }
+
+  private shuffleArray<T>(values: T[]): T[] {
+    const shuffledValues = [...values];
+
+    for (let index = shuffledValues.length - 1; index > 0; index--) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      [shuffledValues[index], shuffledValues[randomIndex]] = [
+        shuffledValues[randomIndex],
+        shuffledValues[index],
+      ];
+    }
+
+    return shuffledValues;
   }
 
   private formatButtonLabel(label: string) {
@@ -525,82 +621,47 @@ export class PictureGameCommand extends Command {
       .trim();
   }
 
-  private resolveLocalImageAttachment(
-    rawImagePath: string | null | undefined,
-  ): LocalImageAttachment | null {
-    const imagePath = String(rawImagePath ?? "").trim();
+  private isRemoteUrl(value: string) {
+    return value.startsWith("http://") || value.startsWith("https://");
+  }
 
-    if (!imagePath) {
-      return null;
-    }
+  private async delay(ms: number, abortSignal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(resolve, ms);
 
-    if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
-      return null;
-    }
+      abortSignal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timeout);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  }
 
-    const candidates = this.getLocalImagePathCandidates(imagePath);
+  private async sendEphemeralAfterPublicDefer(
+    interaction: Command.ChatInputCommandInteraction,
+    message: string,
+  ) {
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.deleteReply().catch(() => null);
 
-    for (const candidatePath of candidates) {
-      if (!existsSync(candidatePath)) {
-        continue;
+        await interaction.followUp({
+          content: message,
+          ephemeral: true,
+        });
+
+        return;
       }
 
-      const fileName = "pilt.png";
-
-      return {
-        filePath: candidatePath,
-        fileName,
-        embedUrl: `attachment://${fileName}`,
-      };
-    }
-
-    this.logError(`Image file not found: ${imagePath}`, null);
-
-    return null;
-  }
-
-  private getLocalImagePathCandidates(imagePath: string) {
-    const fileName = basename(imagePath);
-    const fileNameWithoutExtension = fileName.replace(/\.[^.]+$/, "");
-
-    const possibleFileNames = [
-      fileName,
-      `${fileNameWithoutExtension}.png`,
-      `${fileNameWithoutExtension}.jpg`,
-      `${fileNameWithoutExtension}.jpeg`,
-      `${fileNameWithoutExtension}.webp`,
-    ];
-
-    const candidates: string[] = [];
-
-    for (const possibleFileName of possibleFileNames) {
-      candidates.push(
-        path.resolve(imagePath),
-        path.join(process.cwd(), imagePath),
-        path.join(process.cwd(), "pictures", possibleFileName),
-        path.join(process.cwd(), "dist", "pictures", possibleFileName),
-        path.join(process.cwd(), "..", "pictures", possibleFileName),
-      );
-    }
-
-    return Array.from(new Set(candidates));
-  }
-
-  private async sendFailureMessage(
-    interaction: Command.ChatInputCommandInteraction,
-  ) {
-    const message =
-      "Pildimängu ei õnnestunud käivitada. Proovi natuke hiljem uuesti.";
-
-    try {
-      await interaction.editReply({
+      await interaction.reply({
         content: message,
-        embeds: [],
-        components: [],
-        files: [],
+        ephemeral: true,
       });
     } catch (error) {
-      this.logError("Failed to send picture game failure message:", error);
+      this.logError("Failed to send ephemeral error message:", error);
     }
   }
 
