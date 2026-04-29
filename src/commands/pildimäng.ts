@@ -63,25 +63,37 @@ export class PictureGameCommand extends Command {
     );
   }
 
-  public async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
+  public async chatInputRun(
+    interaction: Command.ChatInputCommandInteraction,
+  ): Promise<void> {
     const validationError = this.validateInteraction(interaction);
 
     if (validationError) {
-      return interaction.reply({
+      await interaction.reply({
         content: validationError,
         ephemeral: true,
       });
+      return;
     }
 
-    const guild = interaction.guild!;
-    const channel = interaction.channel as TextBasedChannel;
+    const guild = interaction.guild;
+    const channel = interaction.channel;
     const channelId = interaction.channelId;
 
+    if (!guild || !channel?.isTextBased()) {
+      await interaction.reply({
+        content: "Selles kanalis ei saa pildimängu käivitada.",
+        ephemeral: true,
+      });
+      return;
+    }
+
     if (this.activeGameChannelIds.has(channelId)) {
-      return interaction.reply({
+      await interaction.reply({
         content: "Pildimäng juba käib.",
         ephemeral: true,
       });
+      return;
     }
 
     this.activeGameChannelIds.add(channelId);
@@ -153,7 +165,7 @@ export class PictureGameCommand extends Command {
     guildId: string;
     allQuestions: TriviaQuestion[];
     abortSignal: AbortSignal;
-  }) {
+  }): Promise<void> {
     const { interaction, channel, guildId, allQuestions, abortSignal } =
       options;
 
@@ -357,7 +369,7 @@ export class PictureGameCommand extends Command {
     userId: string;
     question: MultipleChoiceQuestion;
     isCorrect: boolean;
-  }) {
+  }): Promise<void> {
     const pointChange = options.isCorrect
       ? options.question.points
       : -options.question.points;
@@ -399,7 +411,7 @@ export class PictureGameCommand extends Command {
   private async sendRoundFinishedMessage(
     channel: TextBasedChannel,
     correctAnswerCount: number,
-  ) {
+  ): Promise<void> {
     await channel.send({
       embeds: [
         new EmbedBuilder()
@@ -413,7 +425,7 @@ export class PictureGameCommand extends Command {
   private buildQuestionEmbed(
     question: MultipleChoiceQuestion,
     imageSource: string | null,
-  ) {
+  ): EmbedBuilder {
     const embed = new EmbedBuilder()
       .setTitle(question.title)
       .setDescription(
@@ -453,7 +465,13 @@ export class PictureGameCommand extends Command {
   }
 
   private parseQuestionCustomId(customId: string): ParsedCustomId | null {
-    const [prefix, sessionId, optionIndexRaw] = customId.split(":");
+    const parts = customId.split(":");
+
+    if (parts.length !== 3) {
+      return null;
+    }
+
+    const [prefix, sessionId, optionIndexRaw] = parts;
 
     if (prefix !== "pg" && prefix !== "trivia") {
       return null;
@@ -474,7 +492,7 @@ export class PictureGameCommand extends Command {
   private async disableMessageButtons(
     message: Message,
     row: ActionRowBuilder<ButtonBuilder>,
-  ) {
+  ): Promise<void> {
     const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       row.components.map((component) =>
         ButtonBuilder.from(component.toJSON()).setDisabled(true),
@@ -525,7 +543,7 @@ export class PictureGameCommand extends Command {
     return null;
   }
 
-  private getLocalImagePathCandidates(imagePath: string) {
+  private getLocalImagePathCandidates(imagePath: string): string[] {
     const fileName = basename(imagePath);
     const fileNameWithoutExtension = fileName.replace(/\.[^.]+$/, "");
 
@@ -550,7 +568,7 @@ export class PictureGameCommand extends Command {
     );
   }
 
-  private uniqueByNormalizedAnswer(values: string[]) {
+  private uniqueByNormalizedAnswer(values: string[]): string[] {
     const uniqueValues = new Map<string, string>();
 
     for (const value of values) {
@@ -581,7 +599,7 @@ export class PictureGameCommand extends Command {
     return shuffledValues;
   }
 
-  private formatButtonLabel(label: string) {
+  private formatButtonLabel(label: string): string {
     const normalizedLabel = label.replace(/\s+/g, " ").trim();
 
     if (!normalizedLabel) {
@@ -595,7 +613,7 @@ export class PictureGameCommand extends Command {
     return `${normalizedLabel.slice(0, 77)}...`;
   }
 
-  private createSessionId() {
+  private createSessionId(): string {
     return `${Date.now().toString(36)}${Math.random()
       .toString(36)
       .slice(2, 8)}`;
@@ -606,11 +624,11 @@ export class PictureGameCommand extends Command {
     return PointsService.getPoints(guildId, userId);
   }
 
-  private formatPoints(points: number) {
+  private formatPoints(points: number): string {
     return Number.isInteger(points) ? points.toString() : points.toFixed(1);
   }
 
-  private normalizeAnswer(value: string) {
+  private normalizeAnswer(value: string): string {
     return value
       .toLowerCase()
       .normalize("NFD")
@@ -620,7 +638,7 @@ export class PictureGameCommand extends Command {
       .trim();
   }
 
-  private isRemoteUrl(value: string) {
+  private isRemoteUrl(value: string): boolean {
     return value.startsWith("http://") || value.startsWith("https://");
   }
 
@@ -642,7 +660,7 @@ export class PictureGameCommand extends Command {
   private async sendEphemeralAfterPublicDefer(
     interaction: Command.ChatInputCommandInteraction,
     message: string,
-  ) {
+  ): Promise<void> {
     try {
       if (interaction.deferred || interaction.replied) {
         await interaction.deleteReply().catch(() => null);
@@ -664,7 +682,7 @@ export class PictureGameCommand extends Command {
     }
   }
 
-  private logError(message: string, error: unknown) {
+  private logError(message: string, error: unknown): void {
     console.error(message, error);
   }
 }

@@ -43,6 +43,8 @@ interface GoogleSheetsCredentials {
   privateKey: string;
 }
 
+type GoogleSheetRow = unknown[];
+
 class SheetsService {
   private sheets = google.sheets("v4");
   private cache: TriviaQuestion[] | null = null;
@@ -201,7 +203,7 @@ class SheetsService {
         range: `${sheetName}!A1:Z`,
       });
 
-      const rows = response.data.values || [];
+      const rows = (response.data.values || []) as GoogleSheetRow[];
 
       if (rows.length === 0) {
         throw new Error("Sheet has no data");
@@ -227,8 +229,8 @@ class SheetsService {
         }
 
         const wrongAnswers = wrongAnswersRaw
-          .map((answer) => String(answer ?? "").trim())
-          .filter((answer) => answer.length > 0);
+          .map((answer: unknown) => String(answer ?? "").trim())
+          .filter((answer: string) => answer.length > 0);
 
         questions.push({
           imageUrl: imagePath,
