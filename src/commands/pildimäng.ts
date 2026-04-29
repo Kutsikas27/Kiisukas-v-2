@@ -140,7 +140,7 @@ export class PictureGameCommand extends Command {
     const triviaQuestion = allQuestions[questionIndex];
 
     const question = this.createQuestion({
-      title: "Trivia - Vastusta küsimus",
+      title: "Trivia - Vasta küsimusele.",
       description: triviaQuestion.question,
       correctAnswer: triviaQuestion.correctAnswer,
       allAnswers: [
@@ -168,14 +168,14 @@ export class PictureGameCommand extends Command {
 
     await this.disableMessageButtons(message, row);
 
-    await channel.send({
+    await message.reply({
       embeds: [
         new EmbedBuilder()
-          .setTitle("Õige vastus!")
+          .setTitle("Vastus")
           .setDescription(
-            `Õige vastus: **${triviaQuestion.correctAnswer}**\n\nÕigeid vastajaid: **${correctUserIds.size}**`,
+            `Õigeid vastuseid: **${triviaQuestion.correctAnswer}**\n\nÕigeid vastajaid: **${correctUserIds.size}**`,
           )
-          .setColor("Gold"),
+          .setColor("#3397CC"),
       ],
     });
   }
