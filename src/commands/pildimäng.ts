@@ -48,6 +48,8 @@ interface QuestionMessageOptions {
   components: ActionRowBuilder<ButtonBuilder>[];
 }
 
+const RECENT_QUESTION_LIMIT = 50;
+
 @ApplyOptions<Command.Options>({
   name: "pildimäng",
   description: "Alusta trivia mängu piltidega",
@@ -55,6 +57,7 @@ interface QuestionMessageOptions {
 export class PictureGameCommand extends Command {
   private readonly activeGameChannelIds = new Set<string>();
   private readonly gameLoopControllers = new Map<string, AbortController>();
+  private readonly recentQuestionKeysByChannelId = new Map<string, string[]>();
 
   public override registerApplicationCommands(registry: Command.Registry) {
     registry.registerChatInputCommand((builder) =>
@@ -119,6 +122,7 @@ export class PictureGameCommand extends Command {
       await this.playSingleRound({
         interaction,
         channel,
+        channelId,
         guildId: guild.id,
         allQuestions,
         abortSignal: abortController.signal,
@@ -161,18 +165,25 @@ export class PictureGameCommand extends Command {
   private async playSingleRound(options: {
     interaction: Command.ChatInputCommandInteraction;
     channel: TextBasedChannel;
+    channelId: string;
     guildId: string;
     allQuestions: TriviaQuestion[];
     abortSignal: AbortSignal;
   }): Promise<void> {
-    const { interaction, channel, guildId, allQuestions, abortSignal } =
-      options;
+    const {
+      interaction,
+      channel,
+      channelId,
+      guildId,
+      allQuestions,
+      abortSignal,
+    } = options;
 
     if (abortSignal.aborted) {
       return;
     }
 
-    const triviaQuestion = this.pickRandomQuestion(allQuestions);
+    const triviaQuestion = this.pickRandomQuestion(channelId, allQuestions);
     const question = this.createQuestion(triviaQuestion);
     const sessionId = this.createSessionId();
     const row = this.buildButtonRow(question, sessionId);
@@ -197,9 +208,50 @@ export class PictureGameCommand extends Command {
     await this.sendRoundFinishedMessage(channel, correctUserIds.size);
   }
 
-  private pickRandomQuestion(allQuestions: TriviaQuestion[]): TriviaQuestion {
-    const questionIndex = Math.floor(Math.random() * allQuestions.length);
-    return allQuestions[questionIndex];
+  private pickRandomQuestion(
+    channelId: string,
+    allQuestions: TriviaQuestion[],
+  ): TriviaQuestion {
+    const recentQuestionKeys =
+      this.recentQuestionKeysByChannelId.get(channelId) ?? [];
+
+    const availableQuestions = allQuestions.filter(
+      (question) => !recentQuestionKeys.includes(this.getQuestionKey(question)),
+    );
+
+    const questionPool =
+      availableQuestions.length > 0 ? availableQuestions : allQuestions;
+
+    const questionIndex = Math.floor(Math.random() * questionPool.length);
+    const selectedQuestion = questionPool[questionIndex];
+
+    this.rememberRecentQuestion(channelId, selectedQuestion);
+
+    return selectedQuestion;
+  }
+
+  private rememberRecentQuestion(
+    channelId: string,
+    question: TriviaQuestion,
+  ): void {
+    const questionKey = this.getQuestionKey(question);
+    const previousKeys =
+      this.recentQuestionKeysByChannelId.get(channelId) ?? [];
+
+    const nextKeys = [
+      ...previousKeys.filter((existingKey) => existingKey !== questionKey),
+      questionKey,
+    ].slice(-RECENT_QUESTION_LIMIT);
+
+    this.recentQuestionKeysByChannelId.set(channelId, nextKeys);
+  }
+
+  private getQuestionKey(question: TriviaQuestion): string {
+    return [
+      this.normalizeAnswer(question.imageUrl),
+      this.normalizeAnswer(question.question),
+      this.normalizeAnswer(question.correctAnswer),
+    ].join("|");
   }
 
   private createQuestion(
@@ -452,7 +504,10 @@ export class PictureGameCommand extends Command {
     return new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
   }
 
-  private buildQuestionCustomId(sessionId: string, optionIndex: number) {
+  private buildQuestionCustomId(
+    sessionId: string,
+    optionIndex: number,
+  ): string {
     return `pg:${sessionId}:${optionIndex}`;
   }
 
