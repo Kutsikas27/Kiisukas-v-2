@@ -46,7 +46,6 @@ interface QuestionMessageOptions {
   triviaQuestion: TriviaQuestion;
   question: MultipleChoiceQuestion;
   components: ActionRowBuilder<ButtonBuilder>[];
-  isInitial: boolean;
 }
 
 @ApplyOptions<Command.Options>({
@@ -117,7 +116,7 @@ export class PictureGameCommand extends Command {
         return;
       }
 
-      await this.gameLoop({
+      await this.playSingleRound({
         interaction,
         channel,
         guildId: guild.id,
@@ -159,7 +158,7 @@ export class PictureGameCommand extends Command {
     return null;
   }
 
-  private async gameLoop(options: {
+  private async playSingleRound(options: {
     interaction: Command.ChatInputCommandInteraction;
     channel: TextBasedChannel;
     guildId: string;
@@ -169,40 +168,38 @@ export class PictureGameCommand extends Command {
     const { interaction, channel, guildId, allQuestions, abortSignal } =
       options;
 
-    let questionIndex = 0;
-    let isInitialMessage = true;
-
-    while (!abortSignal.aborted) {
-      const triviaQuestion = allQuestions[questionIndex];
-      const question = this.createQuestion(triviaQuestion);
-      const sessionId = this.createSessionId();
-      const row = this.buildButtonRow(question, sessionId);
-
-      const message = await this.sendQuestionMessage({
-        interaction,
-        channel,
-        triviaQuestion,
-        question,
-        components: [row],
-        isInitial: isInitialMessage,
-      });
-
-      isInitialMessage = false;
-
-      const correctUserIds = await this.collectAnswers({
-        message,
-        guildId,
-        sessionId,
-        question,
-        abortSignal,
-      });
-
-      await this.disableMessageButtons(message, row);
-      await this.sendRoundFinishedMessage(channel, correctUserIds.size);
-      await this.delay(3000, abortSignal);
-
-      questionIndex = (questionIndex + 1) % allQuestions.length;
+    if (abortSignal.aborted) {
+      return;
     }
+
+    const triviaQuestion = this.pickRandomQuestion(allQuestions);
+    const question = this.createQuestion(triviaQuestion);
+    const sessionId = this.createSessionId();
+    const row = this.buildButtonRow(question, sessionId);
+
+    const message = await this.sendQuestionMessage({
+      interaction,
+      channel,
+      triviaQuestion,
+      question,
+      components: [row],
+    });
+
+    const correctUserIds = await this.collectAnswers({
+      message,
+      guildId,
+      sessionId,
+      question,
+      abortSignal,
+    });
+
+    await this.disableMessageButtons(message, row);
+    await this.sendRoundFinishedMessage(channel, correctUserIds.size);
+  }
+
+  private pickRandomQuestion(allQuestions: TriviaQuestion[]): TriviaQuestion {
+    const questionIndex = Math.floor(Math.random() * allQuestions.length);
+    return allQuestions[questionIndex];
   }
 
   private createQuestion(
@@ -268,18 +265,13 @@ export class PictureGameCommand extends Command {
         ]
       : [];
 
-    const payload = {
+    await options.interaction.editReply({
       embeds: [embed],
       components: options.components,
       files,
-    };
+    });
 
-    if (options.isInitial) {
-      await options.interaction.editReply(payload);
-      return (await options.interaction.fetchReply()) as Message;
-    }
-
-    return await options.channel.send(payload);
+    return (await options.interaction.fetchReply()) as Message;
   }
 
   private async collectAnswers(options: {
@@ -640,21 +632,6 @@ export class PictureGameCommand extends Command {
 
   private isRemoteUrl(value: string): boolean {
     return value.startsWith("http://") || value.startsWith("https://");
-  }
-
-  private async delay(ms: number, abortSignal: AbortSignal): Promise<void> {
-    return new Promise((resolve) => {
-      const timeout = setTimeout(resolve, ms);
-
-      abortSignal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timeout);
-          resolve();
-        },
-        { once: true },
-      );
-    });
   }
 
   private async sendEphemeralAfterPublicDefer(
