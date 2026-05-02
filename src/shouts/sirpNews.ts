@@ -1,8 +1,6 @@
-import { Listener } from "@sapphire/framework";
-import { Client, EmbedBuilder, Events } from "discord.js";
+import { container } from "@sapphire/framework";
+import { EmbedBuilder } from "discord.js";
 import Parser from "rss-parser";
-import fs from "node:fs/promises";
-import path from "node:path";
 import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";
@@ -71,55 +69,32 @@ const SIRP_CATEGORIES: SirpCategory[] = [
   },
 ];
 
-// Jätan vana faili nime alles, et olemasolev "seen" ajalugu ei kaoks.
-const SEEN_FILE = path.join(process.cwd(), "data", "sirp-kunst-seen.json");
-
-const ENABLE_AUTOMATIC_CHECK =
-  process.env.SIRP_ENABLE_AUTOMATIC_CHECK?.toLowerCase() !== "false";
-
-const CHECK_INTERVAL_MINUTES = Number(
-  process.env.SIRP_CHECK_INTERVAL_MINUTES ?? 300,
-);
-
-const INITIAL_CHECK_DELAY_SECONDS = Number(
-  process.env.SIRP_INITIAL_CHECK_DELAY_SECONDS ?? 600,
-);
-
+const CHECK_INTERVAL_MINUTES = 300;
+const INITIAL_CHECK_DELAY_SECONDS = 600;
 const POST_EXISTING_ON_FIRST_RUN = false;
-const MAX_POSTS_PER_CHECK = Number(process.env.SIRP_MAX_POSTS_PER_CHECK ?? 5);
-
-const REQUEST_TIMEOUT_MS = Number(process.env.SIRP_REQUEST_TIMEOUT_MS ?? 5_000);
-const MAX_RESPONSE_BYTES = 750_000;
+const MAX_POSTS_PER_CHECK = 5;
+const REQUEST_TIMEOUT_MS = 5_000;
+const MAX_RESPONSE_BYTES = 2_500_000;
 
 const USER_AGENT = "Kiisukas-v-2 Discord bot (+https://www.sirp.ee/)";
 
 let intervalTimer: NodeJS.Timeout | null = null;
 let initialTimer: NodeJS.Timeout | null = null;
 let isChecking = false;
+const initializedCategories = new Set<string>();
+const seenArticleKeys = new Set<string>();
 
 const parser = new Parser();
 
-export class SirpKunstListener extends Listener {
-  public constructor(context: Listener.Context, options: Listener.Options) {
-    super(context, {
-      ...options,
-      event: Events.ClientReady,
-      once: true,
-    });
-  }
-
-  public run(client: Client) {
-    if (!ENABLE_AUTOMATIC_CHECK) {
-      console.log("[Sirp] Automaatne kontroll on välja lülitatud.");
-      return;
-    }
-
-    startSirpNews(client);
-  }
-}
-
-function startSirpNews(client: Client) {
+export const initSirpNewsShoutsService = () => {
   if (initialTimer || intervalTimer) return;
+
+  const channelId = process.env.SIRP_KUNST_CHANNEL_ID;
+
+  if (!channelId) {
+    console.log("Sirbi kanal seadistamata");
+    return;
+  }
 
   const intervalMs = Math.max(CHECK_INTERVAL_MINUTES, 5) * 60_000;
   const initialDelayMs = Math.max(INITIAL_CHECK_DELAY_SECONDS, 60) * 1_000;
@@ -127,10 +102,10 @@ function startSirpNews(client: Client) {
   initialTimer = setTimeout(() => {
     initialTimer = null;
 
-    void runSirpKunstCheck(client);
+    void runSirpNewsCheck();
 
     intervalTimer = setInterval(() => {
-      void runSirpKunstCheck(client);
+      void runSirpNewsCheck();
     }, intervalMs);
   }, initialDelayMs);
 
@@ -139,10 +114,9 @@ function startSirpNews(client: Client) {
       initialDelayMs / 1_000,
     )}s pärast.`,
   );
-}
+};
 
-export async function runSirpKunstCheck(
-  client: Client,
+export async function runSirpNewsCheck(
   options: SirpCheckOptions = {},
 ): Promise<SirpCheckResult> {
   if (isChecking) {
@@ -157,20 +131,18 @@ export async function runSirpKunstCheck(
   isChecking = true;
 
   try {
-    const channelId =
-      process.env.SIRP_NEWS_CHANNEL_ID ?? process.env.SIRP_KUNST_CHANNEL_ID;
+    const channelId = process.env.SIRP_KUNST_CHANNEL_ID;
 
     if (!channelId) {
       return {
         ok: false,
-        message:
-          "SIRP_NEWS_CHANNEL_ID või SIRP_KUNST_CHANNEL_ID puudub .env failist.",
+        message: "SIRP_KUNST_CHANNEL_ID puudub .env failist.",
         fetched: 0,
         posted: 0,
       };
     }
 
-    const channel = await client.channels.fetch(channelId);
+    const channel = await container.client.channels.fetch(channelId);
 
     if (!isSendableChannel(channel)) {
       return {
@@ -194,22 +166,18 @@ export async function runSirpKunstCheck(
       };
     }
 
-    const seen = await readSeen();
-
     if (options.forcePostLatest) {
       const latestArticle = articles[0];
 
       await postArticle(channel, latestArticle, true);
 
       for (const category of SIRP_CATEGORIES) {
-        seen.add(categorySeenMarker(category.key));
+        initializedCategories.add(category.key);
       }
 
       for (const article of articles) {
-        seen.add(seenArticleKey(article));
+        seenArticleKeys.add(seenArticleKey(article));
       }
-
-      await writeSeen(seen);
 
       return {
         ok: true,
@@ -220,7 +188,7 @@ export async function runSirpKunstCheck(
     }
 
     const newArticles: SirpArticle[] = [];
-    let initializedCategories = 0;
+    let newlyInitializedCategories = 0;
 
     for (const category of SIRP_CATEGORIES) {
       const categoryArticles = articles.filter(
@@ -229,39 +197,31 @@ export async function runSirpKunstCheck(
 
       if (categoryArticles.length === 0) continue;
 
-      const categoryInitialized = isCategoryInitialized(
-        category,
-        categoryArticles,
-        seen,
-      );
+      const categoryInitialized = isCategoryInitialized(category);
 
       if (!categoryInitialized && !POST_EXISTING_ON_FIRST_RUN) {
         for (const article of categoryArticles) {
-          seen.add(seenArticleKey(article));
+          seenArticleKeys.add(seenArticleKey(article));
         }
 
-        seen.add(categorySeenMarker(category.key));
-        initializedCategories++;
+        initializedCategories.add(category.key);
+        newlyInitializedCategories++;
         continue;
       }
 
-      seen.add(categorySeenMarker(category.key));
+      initializedCategories.add(category.key);
 
       for (const article of categoryArticles) {
-        if (!isArticleSeen(article, seen)) {
+        if (!isArticleSeen(article)) {
           newArticles.push(article);
         }
       }
     }
 
-    if (initializedCategories > 0) {
-      await writeSeen(seen);
-    }
-
     if (newArticles.length === 0) {
       const initializedMessage =
-        initializedCategories > 0
-          ? ` Esmakordselt lisatud rubriike märgiti nähtuks: ${initializedCategories}.`
+        newlyInitializedCategories > 0
+          ? ` Esmakordselt lisatud rubriike märgiti nähtuks: ${newlyInitializedCategories}.`
           : "";
 
       return {
@@ -284,10 +244,8 @@ export async function runSirpKunstCheck(
     }
 
     for (const article of newArticles) {
-      seen.add(seenArticleKey(article));
+      seenArticleKeys.add(seenArticleKey(article));
     }
-
-    await writeSeen(seen);
 
     return {
       ok: true,
@@ -404,30 +362,6 @@ async function getArticlesFromRss(
     }));
 }
 
-async function readSeen(): Promise<Set<string>> {
-  try {
-    const raw = await fs.readFile(SEEN_FILE, "utf8");
-    const data = JSON.parse(raw);
-
-    if (!Array.isArray(data)) return new Set();
-
-    return new Set(data.filter((value) => typeof value === "string"));
-  } catch {
-    return new Set();
-  }
-}
-
-async function writeSeen(seen: Set<string>) {
-  await fs.mkdir(path.dirname(SEEN_FILE), { recursive: true });
-
-  const values = Array.from(seen);
-  const markers = values.filter(isCategorySeenMarker);
-  const articleKeys = values.filter((value) => !isCategorySeenMarker(value));
-  const latest = Array.from(new Set([...markers, ...articleKeys.slice(-500)]));
-
-  await fs.writeFile(SEEN_FILE, JSON.stringify(latest, null, 2), "utf8");
-}
-
 function isSendableChannel(channel: unknown): channel is SendableChannel {
   return (
     typeof channel === "object" &&
@@ -437,47 +371,16 @@ function isSendableChannel(channel: unknown): channel is SendableChannel {
   );
 }
 
-function isCategoryInitialized(
-  category: SirpCategory,
-  articles: SirpArticle[],
-  seen: Set<string>,
-) {
-  if (seen.has(categorySeenMarker(category.key))) return true;
-
-  if (articles.some((article) => seen.has(seenArticleKey(article)))) {
-    return true;
-  }
-
-  // Tagasiühilduvus vana failiga, kus Kunsti lingid olid salvestatud ilma rubriigi prefiksita.
-  if (
-    category.key === "kunst" &&
-    (seen.size > 0 ||
-      articles.some((article) => seen.has(articleKey(article.link))))
-  ) {
-    return true;
-  }
-
-  return false;
+function isCategoryInitialized(category: SirpCategory) {
+  return initializedCategories.has(category.key);
 }
 
-function isArticleSeen(article: SirpArticle, seen: Set<string>) {
-  return (
-    seen.has(seenArticleKey(article)) ||
-    // Tagasiühilduvus vana formaadiga.
-    seen.has(articleKey(article.link))
-  );
+function isArticleSeen(article: SirpArticle) {
+  return seenArticleKeys.has(seenArticleKey(article));
 }
 
 function seenArticleKey(article: SirpArticle) {
   return `${article.categoryKey}:${articleKey(article.link)}`;
-}
-
-function categorySeenMarker(categoryKey: string) {
-  return `__category_initialized:${categoryKey}`;
-}
-
-function isCategorySeenMarker(value: string) {
-  return value.startsWith("__category_initialized:");
 }
 
 function articleKey(link: string) {
