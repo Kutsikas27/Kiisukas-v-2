@@ -65,10 +65,9 @@ async function getStatsOrReply<T>(
   } catch (error) {
     console.error("Statistika MongoDB päring ebaõnnestus:", error);
 
-    await interaction.reply({
+    await interaction.editReply({
       content:
         "Statistika andmebaasiga ühendamine ebaõnnestus. Proovi hiljem uuesti.",
-      ephemeral: true,
     });
 
     return null;
@@ -107,6 +106,8 @@ export class StatsCommand extends Command {
       return;
     }
 
+    await interaction.deferReply();
+
     const selectedUser = interaction.options.getUser("kasutaja");
 
     if (selectedUser) {
@@ -122,9 +123,8 @@ export class StatsCommand extends Command {
       if (stats === null) return;
 
       if (!stats) {
-        await interaction.reply({
+        await interaction.editReply({
           content: `${selectedDisplayName} kohta statistikat veel ei ole.`,
-          ephemeral: true,
         });
         return;
       }
@@ -158,7 +158,7 @@ export class StatsCommand extends Command {
             : "Viimase sõnumi aeg puudub",
         });
 
-      await interaction.reply({ embeds: [embed] });
+      await interaction.editReply({ embeds: [embed] });
       return;
     }
 
@@ -172,9 +172,8 @@ export class StatsCommand extends Command {
     const { totals, topUsers } = statsData;
 
     if (!topUsers.length) {
-      await interaction.reply({
+      await interaction.editReply({
         content: "Statistikat veel ei ole.",
-        ephemeral: true,
       });
       return;
     }
@@ -219,6 +218,6 @@ export class StatsCommand extends Command {
       )
       .setDescription(lines.join("\n"));
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   }
 }

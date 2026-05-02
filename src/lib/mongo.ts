@@ -13,9 +13,14 @@ export const getMongoDb = async () => {
 
   if (!clientPromise) {
     client = new MongoClient(mongoUri, {
-      serverSelectionTimeoutMS: 10_000,
+      family: 4,
+      serverSelectionTimeoutMS: 3_000,
     });
-    clientPromise = client.connect();
+    clientPromise = client.connect().catch((error) => {
+      client = null;
+      clientPromise = null;
+      throw error;
+    });
   }
 
   const connectedClient = await clientPromise;
