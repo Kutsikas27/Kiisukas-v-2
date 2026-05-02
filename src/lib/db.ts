@@ -41,4 +41,10 @@ db.exec(`
     char_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   );
+
+  CREATE INDEX IF NOT EXISTS idx_message_logs_guild_user
+    ON message_logs (guild_id, user_id);
+
+  CREATE INDEX IF NOT EXISTS idx_message_logs_guild_created_at
+    ON message_logs (guild_id, created_at);
 `);
