@@ -12,13 +12,18 @@ export class MessageCreateListener extends Listener {
     if (message.author.bot) return;
     if (message.system) return;
 
-    ActivityService.recordMessage({
-      messageId: message.id,
-      guildId: message.guild.id,
-      channelId: message.channel.id,
-      userId: message.author.id,
-      content: message.content ?? "",
-      createdAt: message.createdAt.toISOString(),
-    });
+    try {
+      await ActivityService.recordMessage({
+        guildId: message.guild.id,
+        userId: message.author.id,
+        content: message.content ?? "",
+        createdAt: message.createdAt.toISOString(),
+      });
+    } catch (error) {
+      console.error(
+        "Sõnumi statistika MongoDB-sse salvestamine ebaõnnestus:",
+        error,
+      );
+    }
   }
 }

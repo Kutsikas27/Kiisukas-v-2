@@ -96,7 +96,10 @@ export class StatsCommand extends Command {
         selectedUser.id,
       );
 
-      const stats = ActivityService.getUserStats(guild.id, selectedUser.id);
+      const stats = await ActivityService.getUserStats(
+        guild.id,
+        selectedUser.id,
+      );
 
       if (!stats) {
         await interaction.reply({
@@ -139,8 +142,8 @@ export class StatsCommand extends Command {
       return;
     }
 
-    const totals = ActivityService.getGuildTotals(guild.id);
-    const topUsers = ActivityService.getTopUsers(guild.id, 10);
+    const totals = await ActivityService.getGuildTotals(guild.id);
+    const topUsers = await ActivityService.getTopUsers(guild.id, 10);
 
     if (!topUsers.length) {
       await interaction.reply({
