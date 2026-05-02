@@ -1,7 +1,7 @@
 import { MongoClient } from "mongodb";
 
 const mongoUri = process.env.MONGODB_URI;
-const dbName = process.env.MONGODB_DB_NAME ?? "kiisukas";
+const DB_NAME = "dekadents_db";
 
 let client: MongoClient | null = null;
 let clientPromise: Promise<MongoClient> | null = null;
@@ -12,11 +12,13 @@ export const getMongoDb = async () => {
   }
 
   if (!clientPromise) {
-    client = new MongoClient(mongoUri);
+    client = new MongoClient(mongoUri, {
+      serverSelectionTimeoutMS: 10_000,
+    });
     clientPromise = client.connect();
   }
 
   const connectedClient = await clientPromise;
 
-  return connectedClient.db(dbName);
+  return connectedClient.db(DB_NAME);
 };

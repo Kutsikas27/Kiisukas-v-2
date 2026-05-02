@@ -56,6 +56,25 @@ async function getGuildDisplayName(
   }
 }
 
+async function getStatsOrReply<T>(
+  interaction: Command.ChatInputCommandInteraction,
+  getStats: () => Promise<T>,
+): Promise<T | null> {
+  try {
+    return await getStats();
+  } catch (error) {
+    console.error("Statistika MongoDB päring ebaõnnestus:", error);
+
+    await interaction.reply({
+      content:
+        "Statistika andmebaasiga ühendamine ebaõnnestus. Proovi hiljem uuesti.",
+      ephemeral: true,
+    });
+
+    return null;
+  }
+}
+
 @ApplyOptions<Command.Options>({
   name: "stats",
   description: "Kuvab kasutaja või serveri aktiivsusstatistika",
@@ -96,10 +115,11 @@ export class StatsCommand extends Command {
         selectedUser.id,
       );
 
-      const stats = await ActivityService.getUserStats(
-        guild.id,
-        selectedUser.id,
+      const stats = await getStatsOrReply(interaction, () =>
+        ActivityService.getUserStats(guild.id, selectedUser.id),
       );
+
+      if (stats === null) return;
 
       if (!stats) {
         await interaction.reply({
@@ -142,8 +162,14 @@ export class StatsCommand extends Command {
       return;
     }
 
-    const totals = await ActivityService.getGuildTotals(guild.id);
-    const topUsers = await ActivityService.getTopUsers(guild.id, 10);
+    const statsData = await getStatsOrReply(interaction, async () => ({
+      totals: await ActivityService.getGuildTotals(guild.id),
+      topUsers: await ActivityService.getTopUsers(guild.id, 10),
+    }));
+
+    if (statsData === null) return;
+
+    const { totals, topUsers } = statsData;
 
     if (!topUsers.length) {
       await interaction.reply({
