@@ -13,7 +13,6 @@ type UserActivityStats = {
   user_id: string;
   line_count: number;
   word_count: number;
-  char_count: number;
   last_message_at: string | null;
 };
 
@@ -22,14 +21,12 @@ type UserActivityDocument = {
   userId: string;
   lineCount: number;
   wordCount: number;
-  charCount: number;
   lastMessageAt: string | null;
 };
 
 type GuildTotals = {
   line_count: number;
   word_count: number;
-  char_count: number;
 };
 
 const USER_ACTIVITY_COLLECTION = "user_activity";
@@ -62,7 +59,6 @@ export class ActivityService {
   public static async recordMessage(input: RecordMessageInput) {
     const content = input.content ?? "";
     const wordCount = countWords(content);
-    const charCount = content.length;
     const collection = await getUserActivityCollection();
 
     await collection.updateOne(
@@ -74,7 +70,6 @@ export class ActivityService {
         $inc: {
           lineCount: 1,
           wordCount,
-          charCount,
         },
         $set: {
           lastMessageAt: input.createdAt,
@@ -116,7 +111,6 @@ export class ActivityService {
             _id: null,
             line_count: { $sum: "$lineCount" },
             word_count: { $sum: "$wordCount" },
-            char_count: { $sum: "$charCount" },
           },
         },
         { $project: { _id: 0 } },
@@ -127,7 +121,6 @@ export class ActivityService {
       totals ?? {
         line_count: 0,
         word_count: 0,
-        char_count: 0,
       }
     );
   }
@@ -139,7 +132,6 @@ function mapUserActivity(document: UserActivityDocument): UserActivityStats {
     user_id: document.userId,
     line_count: document.lineCount ?? 0,
     word_count: document.wordCount ?? 0,
-    char_count: document.charCount ?? 0,
     last_message_at: document.lastMessageAt ?? null,
   };
 }

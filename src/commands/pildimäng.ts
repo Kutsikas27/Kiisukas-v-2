@@ -418,7 +418,7 @@ export class PictureGameCommand extends Command {
       ? options.question.points
       : -options.question.points;
 
-    const totalPoints = this.addAndGetPoints(
+    const totalPoints = await this.addAndGetPoints(
       options.guildId,
       options.userId,
       pointChange,
@@ -666,8 +666,12 @@ export class PictureGameCommand extends Command {
       .slice(2, 8)}`;
   }
 
-  private addAndGetPoints(guildId: string, userId: string, points: number) {
-    PointsService.addPoints(guildId, userId, points);
+  private async addAndGetPoints(
+    guildId: string,
+    userId: string,
+    points: number,
+  ) {
+    await PointsService.addPoints(guildId, userId, points);
     return PointsService.getPoints(guildId, userId);
   }
 

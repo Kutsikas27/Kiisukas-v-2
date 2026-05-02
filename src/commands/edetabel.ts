@@ -36,30 +36,34 @@ export class LeaderboardCommand extends Command {
       return;
     }
 
+    await interaction.deferReply();
+
     const targetUser = interaction.options.getUser("kasutaja");
 
-    if (targetUser) {
-      // Show points for specific user
-      const points = Math.max(
-        0,
-        PointsService.getPoints(guild.id, targetUser.id),
-      );
-      const username =
-        interaction.guild?.members.cache.get(targetUser.id)?.displayName ||
-        targetUser.username;
+    try {
+      if (targetUser) {
+        const points = Math.max(
+          0,
+          await PointsService.getPoints(guild.id, targetUser.id),
+        );
+        const username =
+          interaction.guild?.members.cache.get(targetUser.id)?.displayName ||
+          targetUser.username;
 
-      const embed = new EmbedBuilder()
-        .setTitle("Kasutaja Punktid")
-        .setDescription(`${username}il on ${points} punkti pildimängust.`)
-        .setColor("Blue");
+        const embed = new EmbedBuilder()
+          .setTitle("Kasutaja Punktid")
+          .setDescription(`${username}il on ${points} punkti pildimängust.`)
+          .setColor("Blue");
 
-      return await interaction.reply({ embeds: [embed] });
-    } else {
-      // Show top 10 leaderboard
-      const topUsers = PointsService.getTopUsers(guild.id, 10);
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
+
+      const topUsers = await PointsService.getTopUsers(guild.id, 10);
 
       if (topUsers.length === 0) {
-        return await interaction.reply("Edetabel on tühi.");
+        await interaction.editReply("Edetabel on tühi.");
+        return;
       }
 
       const description = topUsers
@@ -77,7 +81,13 @@ export class LeaderboardCommand extends Command {
         .setDescription(description)
         .setColor("Gold");
 
-      return await interaction.reply({ embeds: [embed] });
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      console.error("Pildimängu edetabeli MongoDB päring ebaõnnestus:", error);
+
+      await interaction.editReply(
+        "Pildimängu edetabeli andmebaasiga ühendamine ebaõnnestus. Proovi hiljem uuesti.",
+      );
     }
   }
 }

@@ -1,48 +1,74 @@
-import { db } from "../lib/db";
+import { getMongoDb } from "../lib/mongo";
+import type { Collection } from "mongodb";
+
+type UserPointsDocument = {
+  guildId: string;
+  userId: string;
+  points: number;
+};
+
+type UserPoints = {
+  guild_id: string;
+  user_id: string;
+  points: number;
+};
+
+const USER_POINTS_COLLECTION = "user_points";
+
+let indexesReady: Promise<void> | null = null;
+
+async function getUserPointsCollection() {
+  const db = await getMongoDb();
+  const collection = db.collection<UserPointsDocument>(USER_POINTS_COLLECTION);
+
+  indexesReady ??= createIndexes(collection);
+  await indexesReady;
+
+  return collection;
+}
+
+async function createIndexes(collection: Collection<UserPointsDocument>) {
+  await collection.createIndex({ guildId: 1, userId: 1 }, { unique: true });
+  await collection.createIndex({ guildId: 1, points: -1 });
+}
 
 export class PointsService {
-  public static addPoints(guildId: string, userId: string, points: number) {
-    const upsertPoints = db.prepare(`
-      INSERT INTO user_points (
-        guild_id,
-        user_id,
-        points
-      )
-      VALUES (?, ?, ?)
-      ON CONFLICT(guild_id, user_id) DO UPDATE SET
-        points = points + excluded.points
-    `);
+  public static async addPoints(guildId: string, userId: string, points: number) {
+    const collection = await getUserPointsCollection();
 
-    upsertPoints.run(guildId, userId, points);
+    await collection.updateOne(
+      { guildId, userId },
+      {
+        $inc: { points },
+        $setOnInsert: { guildId, userId },
+      },
+      { upsert: true },
+    );
   }
 
-  public static getPoints(guildId: string, userId: string): number {
-    const stmt = db.prepare(`
-      SELECT points
-      FROM user_points
-      WHERE guild_id = ? AND user_id = ?
-    `);
+  public static async getPoints(guildId: string, userId: string): Promise<number> {
+    const collection = await getUserPointsCollection();
+    const document = await collection.findOne({ guildId, userId });
 
-    const result = stmt.get(guildId, userId) as { points: number } | undefined;
-    return result?.points ?? 0;
+    return document?.points ?? 0;
   }
 
-  public static getTopUsers(guildId: string, limit = 10) {
-    const stmt = db.prepare(`
-      SELECT
-        guild_id,
-        user_id,
-        points
-      FROM user_points
-      WHERE guild_id = ?
-      ORDER BY points DESC
-      LIMIT ?
-    `);
+  public static async getTopUsers(guildId: string, limit = 10) {
+    const collection = await getUserPointsCollection();
+    const documents = await collection
+      .find({ guildId })
+      .sort({ points: -1 })
+      .limit(limit)
+      .toArray();
 
-    return stmt.all(guildId, limit) as Array<{
-      guild_id: string;
-      user_id: string;
-      points: number;
-    }>;
+    return documents.map(mapUserPoints);
   }
+}
+
+function mapUserPoints(document: UserPointsDocument): UserPoints {
+  return {
+    guild_id: document.guildId,
+    user_id: document.userId,
+    points: document.points ?? 0,
+  };
 }
