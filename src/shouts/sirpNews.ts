@@ -1,25 +1,15 @@
 import { container } from "@sapphire/framework";
-import { EmbedBuilder } from "discord.js";
-import Parser from "rss-parser";
-import http from "node:http";
-import https from "node:https";
-import { URL } from "node:url";
-
-type SirpCategory = {
-  key: string;
-  label: string;
-  pageUrl: string;
-  feedUrl: string;
-};
-
-type SirpArticle = {
-  title: string;
-  link: string;
-  description?: string;
-  pubDate?: string;
-  categoryKey: string;
-  categoryLabel: string;
-};
+import { AttachmentBuilder, EmbedBuilder } from "discord.js";
+import {
+  SIRP_CATEGORIES,
+  type SirpArticle,
+  type SirpCategory,
+  articleKey,
+  fetchSirpImage,
+  getArticleTime,
+  getImageExtension,
+  getSirpArticles,
+} from "../services/sirp.service";
 
 type SirpCheckOptions = {
   forcePostLatest?: boolean;
@@ -33,58 +23,22 @@ type SirpCheckResult = {
 };
 
 type SendableChannel = {
-  send: (payload: { embeds: EmbedBuilder[] }) => Promise<unknown>;
+  send: (payload: {
+    embeds: EmbedBuilder[];
+    files?: AttachmentBuilder[];
+  }) => Promise<unknown>;
 };
-
-const SIRP_CATEGORIES: SirpCategory[] = [
-  {
-    key: "kunst",
-    label: "Kunst",
-    pageUrl: "https://www.sirp.ee/category/kunst/",
-    feedUrl: "https://www.sirp.ee/category/kunst/feed/",
-  },
-  {
-    key: "teater",
-    label: "Teater",
-    pageUrl: "https://www.sirp.ee/category/teater/",
-    feedUrl: "https://www.sirp.ee/category/teater/feed/",
-  },
-  {
-    key: "muusika",
-    label: "Muusika",
-    pageUrl: "https://www.sirp.ee/category/muusika/",
-    feedUrl: "https://www.sirp.ee/category/muusika/feed/",
-  },
-  {
-    key: "kirjandus",
-    label: "Kirjandus",
-    pageUrl: "https://www.sirp.ee/category/kirjandus/",
-    feedUrl: "https://www.sirp.ee/category/kirjandus/feed/",
-  },
-  {
-    key: "film",
-    label: "Film",
-    pageUrl: "https://www.sirp.ee/category/film/",
-    feedUrl: "https://www.sirp.ee/category/film/feed/",
-  },
-];
 
 const CHECK_INTERVAL_MINUTES = 300;
 const INITIAL_CHECK_DELAY_SECONDS = 600;
 const POST_EXISTING_ON_FIRST_RUN = false;
 const MAX_POSTS_PER_CHECK = 5;
-const REQUEST_TIMEOUT_MS = 5_000;
-const MAX_RESPONSE_BYTES = 2_500_000;
-
-const USER_AGENT = "Kiisukas-v-2 Discord bot (+https://www.sirp.ee/)";
 
 let intervalTimer: NodeJS.Timeout | null = null;
 let initialTimer: NodeJS.Timeout | null = null;
 let isChecking = false;
 const initializedCategories = new Set<string>();
 const seenArticleKeys = new Set<string>();
-
-const parser = new Parser();
 
 export const initSirpNewsShoutsService = () => {
   if (initialTimer || intervalTimer) return;
@@ -160,7 +114,7 @@ export async function runSirpNewsCheck(
       return {
         ok: true,
         message:
-          "Sirbi RSS feedidest ei saadud praegu artikleid kätte. Bot jätkab tööd.",
+          "Sirbi rubriigilehtedelt ei saadud praegu artikleid kätte. Bot jätkab tööd.",
         fetched: 0,
         posted: 0,
       };
@@ -273,93 +227,47 @@ async function postArticle(
   article: SirpArticle,
   isTestPost: boolean,
 ) {
+  const descriptionParts = [
+    article.categoryLabel,
+    article.description || `Uus Sirbi ${article.categoryLabel} artikkel.`,
+    `[Loe edasi](${article.link})`,
+  ];
+  const footerParts = [article.author, article.dateText].filter(Boolean);
+
   const embed = new EmbedBuilder()
     .setColor(0x71368a)
     .setTitle(article.title)
     .setURL(article.link)
-    .setDescription(
-      article.description || `Uus Sirbi ${article.categoryLabel} artikkel.`,
-    )
-    .addFields({
-      name: "Allikas",
-      value: `Sirp / ${article.categoryLabel}`,
-      inline: true,
-    })
-    .setFooter({
-      text: isTestPost ? "Testpostitus" : "Sirbi automaatpostitus",
+    .setDescription(descriptionParts.join("\n\n"));
+
+  if (footerParts.length > 0) {
+    embed.setFooter({
+      text: footerParts.join(" • "),
     });
-
-  const timestamp = article.pubDate ? new Date(article.pubDate) : new Date();
-
-  embed.setTimestamp(
-    Number.isNaN(timestamp.getTime()) ? new Date() : timestamp,
-  );
-
-  await channel.send({ embeds: [embed] });
-}
-
-async function getSirpArticles(): Promise<SirpArticle[]> {
-  const results = await Promise.allSettled(
-    SIRP_CATEGORIES.map((category) => getArticlesFromRss(category)),
-  );
-
-  const allArticles: SirpArticle[] = [];
-
-  for (let index = 0; index < results.length; index++) {
-    const category = SIRP_CATEGORIES[index];
-    const result = results[index];
-
-    if (result.status === "fulfilled") {
-      allArticles.push(...result.value);
-      console.log(
-        `[Sirp] ${category.label}: ${result.value.length} artiklit RSSist.`,
-      );
-      continue;
-    }
-
-    console.warn(
-      `[Sirp] ${category.label}: RSS lugemine ebaõnnestus:`,
-      result.reason,
-    );
   }
 
-  const deduplicatedArticles = new Map<string, SirpArticle>();
+  const files: AttachmentBuilder[] = [];
 
-  for (const article of allArticles) {
-    const key = articleKey(article.link);
+  if (article.thumbnailUrl) {
+    try {
+      const image = await fetchSirpImage(article.thumbnailUrl);
+      const filename = `sirp-thumbnail${getImageExtension(
+        article.thumbnailUrl,
+        image.contentType,
+      )}`;
 
-    if (!deduplicatedArticles.has(key)) {
-      deduplicatedArticles.set(key, article);
+      files.push(new AttachmentBuilder(image.buffer, { name: filename }));
+      embed.setImage(`attachment://${filename}`);
+    } catch (error) {
+      console.warn("[Sirp] Thumbnaili allalaadimine ebaõnnestus:", error);
+      embed.setImage(article.thumbnailUrl);
     }
   }
 
-  return Array.from(deduplicatedArticles.values()).sort(
-    (a, b) => getArticleTime(b) - getArticleTime(a),
-  );
-}
-
-async function getArticlesFromRss(
-  category: SirpCategory,
-): Promise<SirpArticle[]> {
-  const xml = await fetchText(category.feedUrl);
-  const feed = await parser.parseString(xml);
-
-  return feed.items
-    .filter((item) => item.title && item.link)
-    .slice(0, 20)
-    .map((item) => ({
-      title: cleanText(item.title ?? ""),
-      link: item.link ?? "",
-      description: cleanText(
-        item.contentSnippet ||
-          item.summary ||
-          item.content ||
-          `Uus Sirbi ${category.label} artikkel.`,
-      ).slice(0, 500),
-      pubDate: item.isoDate || item.pubDate,
-      categoryKey: category.key,
-      categoryLabel: category.label,
-    }));
+  await channel.send({
+    embeds: [embed],
+    files: files.length > 0 ? files : undefined,
+  });
 }
 
 function isSendableChannel(channel: unknown): channel is SendableChannel {
@@ -381,132 +289,4 @@ function isArticleSeen(article: SirpArticle) {
 
 function seenArticleKey(article: SirpArticle) {
   return `${article.categoryKey}:${articleKey(article.link)}`;
-}
-
-function articleKey(link: string) {
-  return link.split("#")[0].replace(/\/$/, "").toLowerCase();
-}
-
-function cleanText(value: string) {
-  return value
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#039;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function getArticleTime(article: SirpArticle) {
-  if (!article.pubDate) return 0;
-
-  const time = new Date(article.pubDate).getTime();
-
-  return Number.isNaN(time) ? 0 : time;
-}
-
-function fetchText(url: string, redirectsLeft = 2): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const parsedUrl = new URL(url);
-    const client = parsedUrl.protocol === "http:" ? http : https;
-
-    let settled = false;
-    let request: http.ClientRequest | null = null;
-
-    const timeout = setTimeout(() => {
-      fail(new Error(`Request timeout after ${REQUEST_TIMEOUT_MS}ms`));
-    }, REQUEST_TIMEOUT_MS);
-
-    function finish(callback: () => void) {
-      if (settled) return;
-
-      settled = true;
-      clearTimeout(timeout);
-      callback();
-    }
-
-    function fail(error: Error) {
-      if (request && !request.destroyed) {
-        request.destroy();
-      }
-
-      finish(() => reject(error));
-    }
-
-    request = client.request(
-      parsedUrl,
-      {
-        method: "GET",
-        agent: false,
-        headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "application/rss+xml,application/xml,text/xml,*/*;q=0.8",
-          Connection: "close",
-        },
-      },
-      (response) => {
-        const statusCode = response.statusCode ?? 0;
-
-        if (
-          [301, 302, 303, 307, 308].includes(statusCode) &&
-          response.headers.location &&
-          redirectsLeft > 0
-        ) {
-          response.resume();
-
-          const nextUrl = new URL(response.headers.location, url).toString();
-
-          finish(() => {
-            resolve(fetchText(nextUrl, redirectsLeft - 1));
-          });
-
-          return;
-        }
-
-        if (statusCode >= 400) {
-          response.resume();
-          fail(new Error(`HTTP ${statusCode}`));
-          return;
-        }
-
-        response.setEncoding("utf8");
-
-        let body = "";
-        let receivedBytes = 0;
-
-        response.on("data", (chunk: string) => {
-          receivedBytes += Buffer.byteLength(chunk, "utf8");
-
-          if (receivedBytes > MAX_RESPONSE_BYTES) {
-            response.destroy();
-            fail(new Error(`Response too large: ${receivedBytes} bytes`));
-            return;
-          }
-
-          body += chunk;
-        });
-
-        response.on("end", () => {
-          finish(() => resolve(body));
-        });
-
-        response.on("error", (error) => {
-          fail(error instanceof Error ? error : new Error(String(error)));
-        });
-      },
-    );
-
-    request.on("timeout", () => {
-      fail(new Error(`Request timeout after ${REQUEST_TIMEOUT_MS}ms`));
-    });
-
-    request.on("error", (error) => {
-      if (settled) return;
-      fail(error instanceof Error ? error : new Error(String(error)));
-    });
-
-    request.setTimeout(REQUEST_TIMEOUT_MS);
-    request.end();
-  });
 }
