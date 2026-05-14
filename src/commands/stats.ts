@@ -87,10 +87,10 @@ function getSelectedPeriod(
 
 function getPeriodLabel(period: ActivityPeriod): string {
   switch (period) {
-    case "day":
-      return "täna";
     case "week":
       return "sel nädalal";
+    case "month":
+      return "sel kuul";
     case "year":
       return "sel aastal";
     default:
@@ -121,8 +121,8 @@ export class StatsCommand extends Command {
             .setRequired(false)
             .addChoices(
               { name: "Kokku", value: "all" },
-              { name: "Täna", value: "day" },
               { name: "Sel nädalal", value: "week" },
+              { name: "Sel kuul", value: "month" },
               { name: "Sel aastal", value: "year" },
             ),
         ),

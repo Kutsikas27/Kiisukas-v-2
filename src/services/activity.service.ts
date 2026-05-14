@@ -5,6 +5,8 @@ import { DateTime } from "luxon";
 type RecordMessageInput = {
   guildId: string;
   userId: string;
+  displayName: string;
+  username: string;
   content: string;
   createdAt: string;
 };
@@ -12,16 +14,20 @@ type RecordMessageInput = {
 type UserActivityStats = {
   guild_id: string;
   user_id: string;
+  display_name: string | null;
+  username: string | null;
   line_count: number;
   word_count: number;
   last_message_at: string | null;
 };
 
-export type ActivityPeriod = "all" | "day" | "week" | "year";
+export type ActivityPeriod = "all" | "week" | "month" | "year";
 
 type UserActivityDocument = {
   guildId: string;
   userId: string;
+  displayName?: string | null;
+  username?: string | null;
   lineCount: number;
   wordCount: number;
   lastMessageAt: string | null;
@@ -100,11 +106,11 @@ function getPeriodKeys(createdAt: string) {
   );
 
   return {
-    day: dateTime.toFormat("yyyy-LL-dd"),
     week: `${dateTime.weekYear}-W${String(dateTime.weekNumber).padStart(
       2,
       "0",
     )}`,
+    month: dateTime.toFormat("yyyy-LL"),
     year: String(dateTime.year),
   } satisfies Record<Exclude<ActivityPeriod, "all">, string>;
 }
@@ -126,6 +132,8 @@ export class ActivityService {
           wordCount,
         },
         $set: {
+          displayName: input.displayName,
+          username: input.username,
           lastMessageAt: input.createdAt,
         },
         $setOnInsert: {
@@ -156,6 +164,8 @@ export class ActivityService {
               wordCount,
             },
             $set: {
+              displayName: input.displayName,
+              username: input.username,
               lastMessageAt: input.createdAt,
             },
             $setOnInsert: {
@@ -254,6 +264,8 @@ function mapUserActivity(document: UserActivityDocument): UserActivityStats {
   return {
     guild_id: document.guildId,
     user_id: document.userId,
+    display_name: document.displayName ?? null,
+    username: document.username ?? null,
     line_count: document.lineCount ?? 0,
     word_count: document.wordCount ?? 0,
     last_message_at: document.lastMessageAt ?? null,
