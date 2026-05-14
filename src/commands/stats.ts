@@ -2,7 +2,10 @@ import { ApplyOptions } from "@sapphire/decorators";
 import { Command } from "@sapphire/framework";
 import { EmbedBuilder, Guild } from "discord.js";
 import { DateTime } from "luxon";
-import { ActivityService } from "../services/activity.service";
+import {
+  ActivityPeriod,
+  ActivityService,
+} from "../services/activity.service";
 
 const TALLINN_TIMEZONE = "Europe/Tallinn";
 
@@ -74,6 +77,27 @@ async function getStatsOrReply<T>(
   }
 }
 
+function getSelectedPeriod(
+  interaction: Command.ChatInputCommandInteraction,
+): ActivityPeriod {
+  return (
+    (interaction.options.getString("periood") as ActivityPeriod | null) ?? "all"
+  );
+}
+
+function getPeriodLabel(period: ActivityPeriod): string {
+  switch (period) {
+    case "day":
+      return "täna";
+    case "week":
+      return "sel nädalal";
+    case "year":
+      return "sel aastal";
+    default:
+      return "kokku";
+  }
+}
+
 @ApplyOptions<Command.Options>({
   name: "stats",
   description: "Kuvab kasutaja või serveri aktiivsusstatistika",
@@ -89,6 +113,18 @@ export class StatsCommand extends Command {
             .setName("kasutaja")
             .setDescription("Kasutaja, kelle statistikat näidata")
             .setRequired(false),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("periood")
+            .setDescription("Mis ajavahemiku statistikat näidata")
+            .setRequired(false)
+            .addChoices(
+              { name: "Kokku", value: "all" },
+              { name: "Täna", value: "day" },
+              { name: "Sel nädalal", value: "week" },
+              { name: "Sel aastal", value: "year" },
+            ),
         ),
     );
   }
@@ -109,6 +145,8 @@ export class StatsCommand extends Command {
     await interaction.deferReply();
 
     const selectedUser = interaction.options.getUser("kasutaja");
+    const selectedPeriod = getSelectedPeriod(interaction);
+    const periodLabel = getPeriodLabel(selectedPeriod);
 
     if (selectedUser) {
       const selectedDisplayName = await getGuildDisplayName(
@@ -117,14 +155,14 @@ export class StatsCommand extends Command {
       );
 
       const stats = await getStatsOrReply(interaction, () =>
-        ActivityService.getUserStats(guild.id, selectedUser.id),
+        ActivityService.getUserStats(guild.id, selectedUser.id, selectedPeriod),
       );
 
       if (stats === null) return;
 
       if (!stats) {
         await interaction.editReply({
-          content: `${selectedDisplayName} kohta statistikat veel ei ole.`,
+          content: `${selectedDisplayName} kohta statistikat perioodil "${periodLabel}" veel ei ole.`,
         });
         return;
       }
@@ -134,7 +172,7 @@ export class StatsCommand extends Command {
 
       const embed = new EmbedBuilder()
         .setColor("#71368A")
-        .setTitle(`Statistika: ${selectedDisplayName}`)
+        .setTitle(`Statistika: ${selectedDisplayName} (${periodLabel})`)
         .addFields(
           {
             name: "Ridu",
@@ -163,8 +201,8 @@ export class StatsCommand extends Command {
     }
 
     const statsData = await getStatsOrReply(interaction, async () => ({
-      totals: await ActivityService.getGuildTotals(guild.id),
-      topUsers: await ActivityService.getTopUsers(guild.id, 10),
+      totals: await ActivityService.getGuildTotals(guild.id, selectedPeriod),
+      topUsers: await ActivityService.getTopUsers(guild.id, 10, selectedPeriod),
     }));
 
     if (statsData === null) return;
@@ -173,7 +211,7 @@ export class StatsCommand extends Command {
 
     if (!topUsers.length) {
       await interaction.editReply({
-        content: "Statistikat veel ei ole.",
+        content: `Statistikat perioodil "${periodLabel}" veel ei ole.`,
       });
       return;
     }
@@ -198,7 +236,7 @@ export class StatsCommand extends Command {
 
     const embed = new EmbedBuilder()
       .setColor("#71368A")
-      .setTitle(`${guild.name} aktiivseimad kasutajad`)
+      .setTitle(`${guild.name} aktiivseimad kasutajad (${periodLabel})`)
       .addFields(
         {
           name: "Kokku ridu",
