@@ -34,7 +34,7 @@ type UserActivityDocument = {
 };
 
 type UserActivityPeriodDocument = UserActivityDocument & {
-  period: Exclude<ActivityPeriod, "all">;
+  period?: Exclude<ActivityPeriod, "all">;
   periodKey: string;
 };
 
@@ -83,12 +83,11 @@ async function createPeriodIndexes(
   collection: Collection<UserActivityPeriodDocument>,
 ) {
   await collection.createIndex(
-    { guildId: 1, userId: 1, period: 1, periodKey: 1 },
+    { guildId: 1, userId: 1, periodKey: 1 },
     { unique: true },
   );
   await collection.createIndex({
     guildId: 1,
-    period: 1,
     periodKey: 1,
     wordCount: -1,
     lineCount: -1,
@@ -100,7 +99,101 @@ function countWords(text: string): number {
   return matches?.length ?? 0;
 }
 
-function getPeriodKeys(createdAt: string) {
+function getTallinnDateTime(value: string | Date = new Date()) {
+  const dateTime =
+    value instanceof Date
+      ? DateTime.fromJSDate(value, { zone: "utc" })
+      : DateTime.fromISO(value, { zone: "utc" });
+
+  return dateTime.setZone(TALLINN_TIMEZONE);
+}
+
+function getDailyPeriodKey(value: string | Date = new Date()): string {
+  return getTallinnDateTime(value).toFormat("yyyy-LL-dd");
+}
+
+function getPeriodKeyRange(period: Exclude<ActivityPeriod, "all">) {
+  const now = getTallinnDateTime();
+  const start = now.startOf(period);
+  const end = now.endOf(period);
+
+  return {
+    startKey: start.toFormat("yyyy-LL-dd"),
+    endKey: end.toFormat("yyyy-LL-dd"),
+  };
+}
+
+function getPeriodMatch(
+  guildId: string,
+  period: Exclude<ActivityPeriod, "all">,
+) {
+  const { startKey, endKey } = getPeriodKeyRange(period);
+  const legacyPeriodKey = getLegacyPeriodKey(period);
+
+  return {
+    guildId,
+    $or: [
+      {
+        periodKey: {
+          $gte: startKey,
+          $lte: endKey,
+        },
+      },
+      {
+        period,
+        periodKey: legacyPeriodKey,
+      },
+    ],
+  };
+}
+
+function getUserPeriodMatch(
+  guildId: string,
+  userId: string,
+  period: Exclude<ActivityPeriod, "all">,
+) {
+  return {
+    ...getPeriodMatch(guildId, period),
+    userId,
+  };
+}
+
+function mapPeriodAggregate(document: UserActivityDocument): UserActivityDocument {
+  return {
+    guildId: document.guildId,
+    userId: document.userId,
+    displayName: document.displayName ?? null,
+    username: document.username ?? null,
+    lineCount: document.lineCount ?? 0,
+    wordCount: document.wordCount ?? 0,
+    lastMessageAt: document.lastMessageAt ?? null,
+  };
+}
+
+function getPeriodAggregationPipeline(match: Record<string, unknown>) {
+  return [
+    { $match: match },
+    { $sort: { lastMessageAt: -1 } },
+    {
+      $group: {
+        _id: {
+          guildId: "$guildId",
+          userId: "$userId",
+        },
+        guildId: { $first: "$guildId" },
+        userId: { $first: "$userId" },
+        displayName: { $first: "$displayName" },
+        username: { $first: "$username" },
+        lineCount: { $sum: "$lineCount" },
+        wordCount: { $sum: "$wordCount" },
+        lastMessageAt: { $max: "$lastMessageAt" },
+      },
+    },
+    { $project: { _id: 0 } },
+  ];
+}
+
+function getLegacyPeriodKeys(createdAt: string) {
   const dateTime = DateTime.fromISO(createdAt, { zone: "utc" }).setZone(
     TALLINN_TIMEZONE,
   );
@@ -113,6 +206,10 @@ function getPeriodKeys(createdAt: string) {
     month: dateTime.toFormat("yyyy-LL"),
     year: String(dateTime.year),
   } satisfies Record<Exclude<ActivityPeriod, "all">, string>;
+}
+
+function getLegacyPeriodKey(period: Exclude<ActivityPeriod, "all">): string {
+  return getLegacyPeriodKeys(new Date().toISOString())[period];
 }
 
 export class ActivityService {
@@ -145,39 +242,31 @@ export class ActivityService {
     );
 
     const periodCollection = await getUserActivityPeriodCollection();
-    const periodKeys = getPeriodKeys(input.createdAt);
+    const periodKey = getDailyPeriodKey(input.createdAt);
 
-    await Promise.all(
-      (Object.entries(periodKeys) as Array<
-        [Exclude<ActivityPeriod, "all">, string]
-      >).map(([period, periodKey]) =>
-        periodCollection.updateOne(
-          {
-            guildId: input.guildId,
-            userId: input.userId,
-            period,
-            periodKey,
-          },
-          {
-            $inc: {
-              lineCount: 1,
-              wordCount,
-            },
-            $set: {
-              displayName: input.displayName,
-              username: input.username,
-              lastMessageAt: input.createdAt,
-            },
-            $setOnInsert: {
-              guildId: input.guildId,
-              userId: input.userId,
-              period,
-              periodKey,
-            },
-          },
-          { upsert: true },
-        ),
-      ),
+    await periodCollection.updateOne(
+      {
+        guildId: input.guildId,
+        userId: input.userId,
+        periodKey,
+      },
+      {
+        $inc: {
+          lineCount: 1,
+          wordCount,
+        },
+        $set: {
+          displayName: input.displayName,
+          username: input.username,
+          lastMessageAt: input.createdAt,
+        },
+        $setOnInsert: {
+          guildId: input.guildId,
+          userId: input.userId,
+          periodKey,
+        },
+      },
+      { upsert: true },
     );
   }
 
@@ -190,11 +279,19 @@ export class ActivityService {
       period === "all"
         ? await getUserActivityCollection()
         : await getUserActivityPeriodCollection();
-    const query =
-      period === "all"
-        ? { guildId, userId }
-        : { guildId, userId, period, periodKey: getCurrentPeriodKey(period) };
-    const document = await collection.findOne(query);
+    if (period !== "all") {
+      const [document] = await collection
+        .aggregate<UserActivityDocument>(
+          getPeriodAggregationPipeline(
+            getUserPeriodMatch(guildId, userId, period),
+          ),
+        )
+        .toArray();
+
+      return document ? mapUserActivity(mapPeriodAggregate(document)) : undefined;
+    }
+
+    const document = await collection.findOne({ guildId, userId });
 
     return document ? mapUserActivity(document) : undefined;
   }
@@ -208,12 +305,22 @@ export class ActivityService {
       period === "all"
         ? await getUserActivityCollection()
         : await getUserActivityPeriodCollection();
-    const query =
-      period === "all"
-        ? { guildId }
-        : { guildId, period, periodKey: getCurrentPeriodKey(period) };
+    if (period !== "all") {
+      const documents = await collection
+        .aggregate<UserActivityDocument>([
+          ...getPeriodAggregationPipeline(getPeriodMatch(guildId, period)),
+          { $sort: { wordCount: -1, lineCount: -1 } },
+          { $limit: limit },
+        ])
+        .toArray();
+
+      return documents.map((document) =>
+        mapUserActivity(mapPeriodAggregate(document)),
+      );
+    }
+
     const documents = await collection
-      .find(query)
+      .find({ guildId })
       .sort({ wordCount: -1, lineCount: -1 })
       .limit(limit)
       .toArray();
@@ -230,9 +337,7 @@ export class ActivityService {
         ? await getUserActivityCollection()
         : await getUserActivityPeriodCollection();
     const match =
-      period === "all"
-        ? { guildId }
-        : { guildId, period, periodKey: getCurrentPeriodKey(period) };
+      period === "all" ? { guildId } : getPeriodMatch(guildId, period);
     const [totals] = await collection
       .aggregate<GuildTotals>([
         { $match: match },
@@ -254,10 +359,6 @@ export class ActivityService {
       }
     );
   }
-}
-
-function getCurrentPeriodKey(period: Exclude<ActivityPeriod, "all">): string {
-  return getPeriodKeys(new Date().toISOString())[period];
 }
 
 function mapUserActivity(document: UserActivityDocument): UserActivityStats {
